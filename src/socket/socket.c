@@ -66,19 +66,21 @@ int create_epoll(int fd){
     return epoll_fd;
 }
 
-void epoll_update(int server_fd, int epoll_fd, int max_events, int * connected, int * closed){
+void epoll_update(int server_fd, int epoll_fd, int max_events, int * connected_sockets, int * closed_sockets, int * readable_sockets, int * writeable_sockets){
 
     struct sockaddr_in peer_addr;
     int address_length = sizeof(peer_addr);
     struct epoll_event events[max_events];
     struct epoll_event event;
     int fds = epoll_wait(epoll_fd, events, max_events, 1000);
-    int pos_connected = 0;
-    int pos_closed = 0;
+    int ind_connected_sockets = 0;
+    int ind_closed_sockets = 0;
+    int ind_readable_sockets = 0;
+    int ind_writeable_sockets = 0;
     for (int i = 0; i < fds; i++) {
         if ((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP) || (events[i].events & EPOLLRDHUP)) {
             close(events[i].data.fd);
-            closed[pos_closed++] = events[i].data.fd;
+            closed_sockets[ind_closed_sockets++] = events[i].data.fd;
             continue;
         }
         if (events[i].data.fd == server_fd) {
@@ -101,9 +103,43 @@ void epoll_update(int server_fd, int epoll_fd, int max_events, int * connected, 
                 close(conn_sock);
                 continue;
             }
-            connected[pos_connected++] = conn_sock;
+            connected_sockets[ind_connected_sockets++] = conn_sock;
         } else {
+            if (events[i].events & EPOLLIN) {
+                readable_sockets[ind_readable_sockets++] = events[i].data.fd;
+            }
+            if (events[i].events & EPOLLOUT) {
+                writeable_sockets[ind_writeable_sockets++] = events[i].data.fd;
+            }
         }
 
     }
 }
+
+int read_socket(int fd, unsigned char * buffer, int len) {
+    int res = recv(fd, buffer, len, 0);
+    if (res == -1) {
+        if (errno != EWOULDBLOCK && errno != EINPROGRESS) return 0;
+        if (res == 0) return 0;
+    }
+    return res;
+}
+
+int write_socket(int fd, unsigned char * buffer, int len){
+    return send(fd, buffer, len, 0);
+}
+
+int access_write_socket(int epoll_fd, int fd) {
+    struct epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP;
+    return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &event);
+}
+
+int denied_write_and_read_socket(int epoll_fd, int fd) {
+    struct epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLERR | EPOLLHUP | EPOLLRDHUP;
+    return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &event);
+}
+
