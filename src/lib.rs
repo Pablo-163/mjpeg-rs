@@ -23,6 +23,8 @@ extern "C" {
     fn write_socket(fd: c_int, buffer: *const c_uchar, len: c_int) -> c_int;
 }
 
+static HEADER: &str = "HTTP/1.0 200 OK\x0d\x0aConnection: keep-alive\x0d\x0aMax-Age: 0\x0d\x0aExpires: 0\x0d\x0aCache-Control: no-cache, private\x0d\x0aPragma: no-cache\x0d\x0aContent-Type: multipart/x-mixed-replace; boundary=mjpegstream\x0d\x0a\x0d\x0a";
+
 #[derive(Debug, Clone)]
 pub struct MjpegServerError {
     description: String,
@@ -36,6 +38,8 @@ impl fmt::Display for MjpegServerError {
 
 struct Data {
     auth: bool,
+    header_len: i32,
+    header_pos: isize,
     image_index: u64,
     payload_len: i32,
     payload_pos: isize,
@@ -88,21 +92,31 @@ impl MjpegServer {
         thread::spawn(move || {
             use std::fs::{File, metadata};
             use std::io::Read;
-            let mut f = File::open("/home/myduomilia/test.jpg").expect("no file found");
-            let met = metadata("/home/myduomilia/test.jpg").expect("unable to read metadata");
-            let mut buffer = vec![0; met.len() as usize];
-            f.read(&mut buffer).expect("buffer overflow");
 
-            let header = format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-length:{}\r\n\r\n", buffer.len());
-            let mut msg = vec![0; header.len() + buffer.len()];
-            for (i, ch) in header.bytes().enumerate() {
-                msg[i] = ch;
+            let mut index: u64 = 0;
+            let images = vec!["/home/myduomilia/test_1.jpg", "/home/myduomilia/test_2.jpg", "/home/myduomilia/test_3.jpg", "/home/myduomilia/test_4.jpg"];
+
+            let mut image_bytes = vec![];
+
+            for image in &images {
+                let mut f = File::open(image.clone()).expect("no file found");
+                let met = metadata(image.clone()).expect("unable to read metadata");
+                let mut buffer = vec![0; met.len() as usize];
+                f.read(&mut buffer).expect("buffer overflow");
+
+                let HEADER_IMAGE = format!("--mjpegstream\x0d\x0aContent-Type: image/jpeg\x0d\x0aContent-Length: {}\x0d\x0a\x0d\x0a", buffer.len());
+                let mut msg = vec![0; HEADER_IMAGE.len() + buffer.len()];
+                for (i, ch) in HEADER_IMAGE.bytes().enumerate() {
+                    msg[i] = ch;
+                }
+                for (i, byte) in buffer.iter().enumerate() {
+                    msg[i + HEADER_IMAGE.len()] = buffer[i];
+                }
+                image_bytes.push(msg);
             }
-            for (i, byte) in buffer.iter().enumerate() {
-                msg[i + header.len()] = buffer[i];
-            }
+
+
             loop {
-
                 {
                     /*
                     * Получаем новое изображение от видео потока и обмениваем со старым
@@ -111,13 +125,14 @@ impl MjpegServer {
                     let mut map = mutex_btree_image_arc.lock().unwrap();
                     let mut counter = mutex_counter_arc.lock().unwrap();
                     *counter += 1;
-                    map.insert(*counter, msg.clone());
+                    map.insert(*counter, image_bytes[(index % 4) as usize].clone());
                 }
-                std::thread::sleep(Duration::from_millis(80));
+                std::thread::sleep(Duration::from_millis(250));
+                index += 1;
             }
         });
+        let mut last_image_id = 0;
         loop {
-            println!("before");
             const MAX_EVENTS: usize = 100;
             let mut connected_sockets: [c_int; MAX_EVENTS] = [0; MAX_EVENTS];
             let mut closed_sockets: [c_int; MAX_EVENTS] = [0; MAX_EVENTS];
@@ -159,6 +174,8 @@ impl MjpegServer {
 
                 let data = Data {
                     auth: true,
+                    header_len: HEADER.len() as i32,
+                    header_pos: 0,
                     image_index: number,
                     payload_len: 0,
                     payload_pos: 0,
@@ -206,49 +223,35 @@ impl MjpegServer {
                 let max_image_index = *self.mutex_counter_max.lock().unwrap();
                 if !map.is_empty() {
                     if let Some(data) = self.data.get_mut(fd) {
-                        if data.payload_len > 0 {
-                            println!(">");
-                            match map.get(&data.image_index) {
-                                Some(bytes) => {
+                        if data.header_len > 0 {
+                            let res = unsafe {
+                                write_socket(*fd, HEADER.as_ptr().offset(data.header_pos), data.header_len)
+                            };
+                            if res == -1 {
+                                unsafe {
+                                    close_socket(*fd);
+                                }
+                                self.data.remove(fd);
+                            } else {
+                                data.header_len -= res;
+                                data.header_pos += res as isize;
+                                if data.header_len == 0 {
                                     let res = unsafe {
-                                        write_socket(*fd, bytes.as_ptr().offset(data.payload_pos), data.payload_len)
+                                        denied_write_and_read_socket(self.epoll_fd, *fd)
                                     };
                                     if res == -1 {
                                         unsafe {
                                             close_socket(*fd);
                                         }
                                         self.data.remove(fd);
-                                    } else {
-                                        data.payload_len -= res;
-                                        data.payload_pos += res as isize;
-                                        if data.payload_len == 0 {
-                                            data.image_index += 1;
-                                            let res = unsafe {
-                                                denied_write_and_read_socket(self.epoll_fd, *fd)
-                                            };
-                                            if res == -1 {
-                                                unsafe {
-                                                    close_socket(*fd);
-                                                }
-                                                self.data.remove(fd);
-                                            }
-                                        }
                                     }
-                                    break;
-                                }
-                                _ => {
-                                    data.image_index += 1;
                                 }
                             }
+
                         } else {
-                            println!("0");
-                            println!("!!! index = {}", data.image_index);
-                            while data.image_index <= max_image_index {
-                                println!("index = {}", data.image_index);
+                            if data.payload_len > 0 {
                                 match map.get(&data.image_index) {
                                     Some(bytes) => {
-                                        data.payload_pos = 0;
-                                        data.payload_len = bytes.len() as i32;
                                         let res = unsafe {
                                             write_socket(*fd, bytes.as_ptr().offset(data.payload_pos), data.payload_len)
                                         };
@@ -279,6 +282,44 @@ impl MjpegServer {
                                         data.image_index += 1;
                                     }
                                 }
+                            } else {
+                                while data.image_index <= max_image_index {
+                                    println!("image index = {}", data.image_index);
+                                    match map.get(&data.image_index) {
+                                        Some(bytes) => {
+                                            data.payload_pos = 0;
+                                            data.payload_len = bytes.len() as i32;
+                                            let res = unsafe {
+                                                write_socket(*fd, bytes.as_ptr().offset(data.payload_pos), data.payload_len)
+                                            };
+                                            if res == -1 {
+                                                unsafe {
+                                                    close_socket(*fd);
+                                                }
+                                                self.data.remove(fd);
+                                            } else {
+                                                data.payload_len -= res;
+                                                data.payload_pos += res as isize;
+                                                if data.payload_len == 0 {
+                                                    data.image_index += 1;
+                                                    let res = unsafe {
+                                                        denied_write_and_read_socket(self.epoll_fd, *fd)
+                                                    };
+                                                    if res == -1 {
+                                                        unsafe {
+                                                            close_socket(*fd);
+                                                        }
+                                                        self.data.remove(fd);
+                                                    }
+                                                }
+                                            }
+                                            break;
+                                        }
+                                        _ => {
+                                            data.image_index += 1;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -286,12 +327,51 @@ impl MjpegServer {
 
                 println!("Writeable connection fd = {}", *fd);
             }
-
             /*
             * Чистим очередь
             */
+            let mut keys = vec![];
+            {
+                let btree_image = self.mutex_btree_image.lock().unwrap();
+                for key in btree_image.keys() {
+                    keys.push(*key);
+                }
+            }
 
-            println!("after");
+            {
+                let mut btree_image = self.mutex_btree_image.lock().unwrap();
+                if btree_image.len() > 100 {
+                    let count = btree_image.len() - 100;
+                    for key in &keys {
+                        if count == 0 {
+                            break;
+                        }
+                        btree_image.remove(key);
+                    }
+                }
+            }
+
+            let mut bad_connection = vec![];
+
+            if !keys.is_empty() && last_image_id < keys[keys.len() - 1].clone() {
+                last_image_id = keys[keys.len() - 1];
+                for (fd, data) in &self.data {
+                    if data.auth == true && data.payload_len == 0 {
+                        let res = unsafe {
+                            access_write_socket(self.epoll_fd, *fd)
+                        };
+                        if res == -1 {
+                            unsafe {
+                                close_socket(*fd);
+                            }
+                            bad_connection.push(*fd);
+                        }
+                    }
+                }
+            }
+            for fd in bad_connection {
+                self.data.remove(&fd);
+            }
         }
     }
 }

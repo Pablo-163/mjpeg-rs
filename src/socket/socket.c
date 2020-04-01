@@ -72,7 +72,7 @@ void epoll_update(int server_fd, int epoll_fd, int max_events, int * connected_s
     int address_length = sizeof(peer_addr);
     struct epoll_event events[max_events];
     struct epoll_event event;
-    int fds = epoll_wait(epoll_fd, events, max_events, 1000);
+    int fds = epoll_wait(epoll_fd, events, max_events, 10);
     int ind_connected_sockets = 0;
     int ind_closed_sockets = 0;
     int ind_readable_sockets = 0;
