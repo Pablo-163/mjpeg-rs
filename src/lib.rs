@@ -4,13 +4,16 @@ use std::fmt;
 use std::os::raw::{c_int, c_schar, c_uchar};
 use std::os::raw::c_char;
 use std::ffi::CString;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::borrow::BorrowMut;
 use std::slice::SliceIndex;
 use std::ops::DerefMut;
+use std::net::TcpStream;
+use std::io::{Read, Write};
+use std::str::from_utf8;
 
 extern "C" {
     fn create_socket(address: *const c_char, port: c_int) -> c_int;
@@ -24,6 +27,23 @@ extern "C" {
 }
 
 static HEADER: &str = "HTTP/1.0 200 OK\x0d\x0aConnection: keep-alive\x0d\x0aMax-Age: 0\x0d\x0aExpires: 0\x0d\x0aCache-Control: no-cache, private\x0d\x0aPragma: no-cache\x0d\x0aContent-Type: multipart/x-mixed-replace; boundary=mjpegstream\x0d\x0a\x0d\x0a";
+
+fn search_bytes(buffer: &[u8], pattern: &[u8]) -> i32 {
+    let len = buffer.len() - pattern.len() + 1;
+    for i in 0 .. len {
+        let mut res = true;
+        for j in 0 .. pattern.len() {
+            if buffer[i + j] != pattern[j] {
+                res = false;
+                break;
+            }
+        }
+        if res {
+            return i as i32;
+        }
+    }
+    return -1;
+}
 
 #[derive(Debug, Clone)]
 pub struct MjpegServerError {
@@ -48,8 +68,8 @@ struct Data {
 pub struct MjpegServer {
     fd: i32,
     epoll_fd: i32,
-    data: BTreeMap<i32, Data>,
-    mutex_btree_image: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
+    data: HashMap<i32, Data>,
+    mutex_queue_images: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     mutex_counter_max: Arc<Mutex<u64>>,
     mutex_counter_min: Arc<Mutex<u64>>,
 }
@@ -77,8 +97,8 @@ impl MjpegServer {
         Ok(MjpegServer {
             fd,
             epoll_fd,
-            data: BTreeMap::<i32, Data>::new(),
-            mutex_btree_image: Arc::new(Mutex::new(BTreeMap::new())),
+            data: HashMap::<i32, Data>::new(),
+            mutex_queue_images: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
             mutex_counter_min: Arc::new(Mutex::new(0)),
         })
@@ -87,48 +107,74 @@ impl MjpegServer {
         /*
         * Запускаем поток для забора видео потока с камеры
         */
-        let mutex_btree_image_arc = self.mutex_btree_image.clone();
+        let mutex_btree_image_arc = self.mutex_queue_images.clone();
         let mutex_counter_arc = self.mutex_counter_max.clone();
         thread::spawn(move || {
-            use std::fs::{File, metadata};
-            use std::io::Read;
+            match TcpStream::connect("213.193.89.202:80") {
+                Ok(mut stream) => {
+                    println!("Successfully connected to server {}", "213.193.89.202");
+                    let msg = b"GET /mjpg/video.mjpg\r\n\r\n";
+                    stream.write(msg).unwrap();
 
-            let mut index: u64 = 0;
-            let images = vec!["/home/myduomilia/test_1.jpg", "/home/myduomilia/test_2.jpg", "/home/myduomilia/test_3.jpg", "/home/myduomilia/test_4.jpg"];
+                    let mut boundary = String::from("");
+                    let mut buffer = vec![0; 1024 * 1024 * 12];
+                    let mut buffer_pos = 0;
+                    loop {
+                        let mut data = [0 as u8; 4096];
+                        match stream.read(&mut data) {
+                            Ok(n) => {
+                                if buffer_pos + n > 1024 * 1024 * 12 {
+                                    println!("Overflowed buffer");
+                                    std::process::exit(1);
+                                }
+                                for i in 0..n {
+                                    buffer[buffer_pos + i] = data[i];
+                                }
+                                buffer_pos += n;
+                                println!("{}", buffer_pos);
+                                // let text = from_utf8(&data).unwrap();
+                                // println!("{}", text);
+                            }
+                            Err(e) => {
+                                println!("Failed to receive data: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                        match boundary.is_empty() {
+                            true => {
+                                let pos_boundary_start = search_bytes(&buffer, b"boundary=");
+                                let pos_boundary_end = search_bytes(&buffer[pos_boundary_start as usize..], b"\r\n\r\n");
+                                boundary = String::from_utf8(Vec::from(&buffer[pos_boundary_start as usize + b"boundary=".len() .. pos_boundary_start as usize + pos_boundary_end as usize])).unwrap_or_else(|_| std::process::exit(1));
+                            }
+                            false => {
+                                let pos_image_start = search_bytes(&buffer, b"\xFF\xD8");
+                                let pos_image_end = search_bytes(&buffer[pos_image_start as usize..], b"\xFF\xD9");
+                                if pos_image_start != -1 && pos_image_end != -1 {
+                                    println!("LENGTH = {}", pos_image_end as usize + b"\xFF\xD9".len());
+                                    let HEADER_IMAGE = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", pos_image_end as usize + b"\xFF\xD9".len() + 1);
+                                    let mut msg = vec![0; HEADER_IMAGE.len() + pos_image_end as usize + b"\xFF\xD9".len() + 1];
+                                    for (i, ch) in HEADER_IMAGE.bytes().enumerate() {
+                                        msg[i] = ch;
+                                    }
+                                    for i in pos_image_start as usize .. pos_image_start as usize + pos_image_end as usize + b"\xFF\xD9".len() + 1 {
+                                        msg[i + HEADER_IMAGE.len() - pos_image_start as usize] = buffer[i];
+                                    }
 
-            let mut image_bytes = vec![];
+                                    let mut map = mutex_btree_image_arc.lock().unwrap_or_else(|_| std::process::exit(1));
+                                    let mut counter = mutex_counter_arc.lock().unwrap_or_else(|_| std::process::exit(1));
+                                    *counter += 1;
+                                    map.insert(*counter, msg);
 
-            for image in &images {
-                let mut f = File::open(image.clone()).expect("no file found");
-                let met = metadata(image.clone()).expect("unable to read metadata");
-                let mut buffer = vec![0; met.len() as usize];
-                f.read(&mut buffer).expect("buffer overflow");
-
-                let HEADER_IMAGE = format!("--mjpegstream\x0d\x0aContent-Type: image/jpeg\x0d\x0aContent-Length: {}\x0d\x0a\x0d\x0a", buffer.len());
-                let mut msg = vec![0; HEADER_IMAGE.len() + buffer.len()];
-                for (i, ch) in HEADER_IMAGE.bytes().enumerate() {
-                    msg[i] = ch;
+                                    println!("IMAGE ...  !!!");
+                                }
+                                println!("Sent data, awaiting reply...");
+                            }
+                        }
+                    }
                 }
-                for (i, byte) in buffer.iter().enumerate() {
-                    msg[i + HEADER_IMAGE.len()] = buffer[i];
+                Err(e) => {
+                    println!("Failed to connect: {}", e);
                 }
-                image_bytes.push(msg);
-            }
-
-
-            loop {
-                {
-                    /*
-                    * Получаем новое изображение от видео потока и обмениваем со старым
-                    */
-
-                    let mut map = mutex_btree_image_arc.lock().unwrap();
-                    let mut counter = mutex_counter_arc.lock().unwrap();
-                    *counter += 1;
-                    map.insert(*counter, image_bytes[(index % 4) as usize].clone());
-                }
-                std::thread::sleep(Duration::from_millis(250));
-                index += 1;
             }
         });
         let mut last_image_id = 0;
@@ -193,9 +239,9 @@ impl MjpegServer {
                     break;
                 }
                 println!("Readable connection fd = {}", *fd);
-                let mut buffer: [c_uchar; 1024] = [0; 1024];
+                let mut buffer: [c_uchar; 4096] = [0; 4096];
                 let res = unsafe {
-                    read_socket(*fd, buffer.as_mut_ptr(), 1024)
+                    read_socket(*fd, buffer.as_mut_ptr(), 4096)
                 };
                 let mut buffer_utf8 = String::new();
                 for ch in &buffer[0..res as usize] {
@@ -219,7 +265,7 @@ impl MjpegServer {
                 if *fd == 0 {
                     break;
                 }
-                let map = self.mutex_btree_image.lock().unwrap();
+                let map = self.mutex_queue_images.lock().unwrap();
                 let max_image_index = *self.mutex_counter_max.lock().unwrap();
                 if !map.is_empty() {
                     if let Some(data) = self.data.get_mut(fd) {
@@ -247,7 +293,6 @@ impl MjpegServer {
                                     }
                                 }
                             }
-
                         } else {
                             if data.payload_len > 0 {
                                 match map.get(&data.image_index) {
@@ -325,33 +370,35 @@ impl MjpegServer {
                     }
                 }
 
-                println!("Writeable connection fd = {}", *fd);
+                // println!("Writeable connection fd = {}", *fd);
             }
             /*
             * Чистим очередь
             */
             let mut keys = vec![];
             {
-                let btree_image = self.mutex_btree_image.lock().unwrap();
+                let btree_image = self.mutex_queue_images.lock().unwrap();
                 for key in btree_image.keys() {
                     keys.push(*key);
                 }
+                keys.sort();
             }
 
             {
-                let mut btree_image = self.mutex_btree_image.lock().unwrap();
-                if btree_image.len() > 100 {
-                    let count = btree_image.len() - 100;
+                let mut queue_images = self.mutex_queue_images.lock().unwrap();
+                if queue_images.len() > 100 {
+                    let mut count = queue_images.len() - 100;
                     for key in &keys {
                         if count == 0 {
                             break;
                         }
-                        btree_image.remove(key);
+                        queue_images.remove(key);
+                        count -= 1;
                     }
                 }
             }
 
-            let mut bad_connection = vec![];
+            let mut bad_connections = vec![];
 
             if !keys.is_empty() && last_image_id < keys[keys.len() - 1].clone() {
                 last_image_id = keys[keys.len() - 1];
@@ -364,12 +411,12 @@ impl MjpegServer {
                             unsafe {
                                 close_socket(*fd);
                             }
-                            bad_connection.push(*fd);
+                            bad_connections.push(*fd);
                         }
                     }
                 }
             }
-            for fd in bad_connection {
+            for fd in bad_connections {
                 self.data.remove(&fd);
             }
         }

@@ -7,7 +7,7 @@ use mjpeg_rs::{MjpegServer};
 fn main() {
     env_logger::init();
     let address = "0.0.0.0";
-    let port = 9000;
+    let port = 9009;
     let server = MjpegServer::new(address, port);
     if let Err(err) = server {
         error!("{}", err);
