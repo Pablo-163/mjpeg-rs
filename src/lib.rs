@@ -14,6 +14,8 @@ use std::ops::DerefMut;
 use std::net::TcpStream;
 use std::io::{Read, Write};
 use std::str::from_utf8;
+use std::mem::swap;
+use std::thread::sleep;
 
 extern "C" {
     fn create_socket(address: *const c_char, port: c_int) -> c_int;
@@ -28,11 +30,14 @@ extern "C" {
 
 static HEADER: &str = "HTTP/1.0 200 OK\x0d\x0aConnection: keep-alive\x0d\x0aMax-Age: 0\x0d\x0aExpires: 0\x0d\x0aCache-Control: no-cache, private\x0d\x0aPragma: no-cache\x0d\x0aContent-Type: multipart/x-mixed-replace; boundary=mjpegstream\x0d\x0a\x0d\x0a";
 
-fn search_bytes(buffer: &[u8], pattern: &[u8]) -> i32 {
+fn search_bytes(buffer: &[u8], pattern: &[u8], limit: usize) -> i32 {
     let len = buffer.len() - pattern.len() + 1;
-    for i in 0 .. len {
+    for i in 0..len {
+        if i >= limit {
+            break;
+        }
         let mut res = true;
-        for j in 0 .. pattern.len() {
+        for j in 0..pattern.len() {
             if buffer[i + j] != pattern[j] {
                 res = false;
                 break;
@@ -69,13 +74,16 @@ pub struct MjpegServer {
     fd: i32,
     epoll_fd: i32,
     data: HashMap<i32, Data>,
+    video_source_ip: String,
+    video_source_uri: String,
     mutex_queue_images: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     mutex_counter_max: Arc<Mutex<u64>>,
     mutex_counter_min: Arc<Mutex<u64>>,
+    mutex_counter_active_sessions: Arc<Mutex<u64>>,
 }
 
 impl MjpegServer {
-    pub fn new(address: &str, port: i32) -> Result<Self, MjpegServerError> {
+    pub fn new(address: &str, port: i32, video_source_ip: &str, video_source_uri: &str) -> Result<Self, MjpegServerError> {
         let address_c = CString::new(address).expect("CString::new failed");
         let fd = unsafe {
             create_socket(address_c.as_ptr(), port)
@@ -97,86 +105,150 @@ impl MjpegServer {
         Ok(MjpegServer {
             fd,
             epoll_fd,
+            video_source_ip: String::from(video_source_ip),
+            video_source_uri: String::from(video_source_uri),
             data: HashMap::<i32, Data>::new(),
             mutex_queue_images: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
             mutex_counter_min: Arc::new(Mutex::new(0)),
+            mutex_counter_active_sessions: Arc::new(Mutex::new(0)),
         })
     }
     pub fn run(&mut self) {
         /*
         * Запускаем поток для забора видео потока с камеры
         */
+        const MAX_BUFFER_LENGTH: usize = 1024 * 1024 * 12;
+        const SOCKET_BUFFER_LENGTH: usize = 4096;
         let mutex_btree_image_arc = self.mutex_queue_images.clone();
         let mutex_counter_arc = self.mutex_counter_max.clone();
+        let mutex_counter_active_session_arc = self.mutex_counter_active_sessions.clone();
+        let video_source_ip = self.video_source_ip.clone();
+        let video_source_uri = self.video_source_uri.clone();
         thread::spawn(move || {
-            match TcpStream::connect("213.193.89.202:80") {
-                Ok(mut stream) => {
-                    println!("Successfully connected to server {}", "213.193.89.202");
-                    let msg = b"GET /mjpg/video.mjpg\r\n\r\n";
-                    stream.write(msg).unwrap();
 
-                    let mut boundary = String::from("");
-                    let mut buffer = vec![0; 1024 * 1024 * 12];
-                    let mut buffer_pos = 0;
-                    loop {
-                        let mut data = [0 as u8; 4096];
-                        match stream.read(&mut data) {
-                            Ok(n) => {
-                                if buffer_pos + n > 1024 * 1024 * 12 {
-                                    println!("Overflowed buffer");
-                                    std::process::exit(1);
-                                }
-                                for i in 0..n {
-                                    buffer[buffer_pos + i] = data[i];
-                                }
-                                buffer_pos += n;
-                                println!("{}", buffer_pos);
-                                // let text = from_utf8(&data).unwrap();
-                                // println!("{}", text);
+            // 213.193.89.202
+
+            loop {
+                sleep(Duration::from_secs(1));
+
+                match TcpStream::connect(&video_source_ip) {
+                    Ok(mut stream) => {
+                        let msg = format!("GET {}\r\n\r\n", &video_source_uri);
+                        stream.write(msg.as_bytes()).unwrap();
+
+                        let mut boundary = String::from("");
+                        let mut buffer = vec![0; MAX_BUFFER_LENGTH];
+                        let mut buffer_pos = 0;
+
+                        let mut first_sep = -1;
+                        let mut second_sep = -1;
+
+                        let mut start_old_search_boundary_pos = -1;
+                        loop {
+
+                            let counter_active_session;
+                            {
+                                counter_active_session = *mutex_counter_active_session_arc.lock().unwrap_or_else(|_| std::process::exit(1));
                             }
-                            Err(e) => {
-                                println!("Failed to receive data: {}", e);
-                                std::process::exit(1);
+                            println!("Connections = {}", counter_active_session);
+                            if counter_active_session == 0 {
+                                break;
                             }
-                        }
-                        match boundary.is_empty() {
-                            true => {
-                                let pos_boundary_start = search_bytes(&buffer, b"boundary=");
-                                let pos_boundary_end = search_bytes(&buffer[pos_boundary_start as usize..], b"\r\n\r\n");
-                                boundary = String::from_utf8(Vec::from(&buffer[pos_boundary_start as usize + b"boundary=".len() .. pos_boundary_start as usize + pos_boundary_end as usize])).unwrap_or_else(|_| std::process::exit(1));
-                            }
-                            false => {
-                                let pos_image_start = search_bytes(&buffer, b"\xFF\xD8");
-                                let pos_image_end = search_bytes(&buffer[pos_image_start as usize..], b"\xFF\xD9");
-                                if pos_image_start != -1 && pos_image_end != -1 {
-                                    println!("LENGTH = {}", pos_image_end as usize + b"\xFF\xD9".len());
-                                    let HEADER_IMAGE = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", pos_image_end as usize + b"\xFF\xD9".len() + 1);
-                                    let mut msg = vec![0; HEADER_IMAGE.len() + pos_image_end as usize + b"\xFF\xD9".len() + 1];
-                                    for (i, ch) in HEADER_IMAGE.bytes().enumerate() {
-                                        msg[i] = ch;
+
+                            let mut data = [0 as u8; SOCKET_BUFFER_LENGTH];
+                            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap_or_else(|_| std::process::exit(1));
+                            match stream.read(&mut data) {
+                                Ok(n) => {
+                                    if buffer_pos + n >= MAX_BUFFER_LENGTH {
+                                        std::process::exit(1);
                                     }
-                                    for i in pos_image_start as usize .. pos_image_start as usize + pos_image_end as usize + b"\xFF\xD9".len() + 1 {
-                                        msg[i + HEADER_IMAGE.len() - pos_image_start as usize] = buffer[i];
+                                    for i in 0..n {
+                                        buffer[buffer_pos + i] = data[i];
+                                    }
+                                    buffer_pos += n;
+                                }
+                                Err(e) => {
+                                    const RESOURCE_TEMPORARILY_UNAVAILABLE: i32 = 11;
+                                    if e.raw_os_error().unwrap() != RESOURCE_TEMPORARILY_UNAVAILABLE {
+                                        println!("Отработка данной ошибки - потеря соединения");
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            match boundary.is_empty() {
+                                true => {
+                                    let boundary_start_pos = search_bytes(&buffer, b"boundary=", buffer_pos);
+                                    if boundary_start_pos != -1 {
+                                        let boundary_end_pos = search_bytes(&buffer[boundary_start_pos as usize..], b"\r\n\r\n", buffer_pos);
+                                        let res = String::from_utf8(Vec::from(&buffer[boundary_start_pos as usize + b"boundary=".len()..boundary_start_pos as usize + boundary_end_pos as usize]));
+                                        match res {
+                                            Ok(value) => {
+                                                boundary = format!("--{}", value);
+                                            },
+                                            Err(err) => {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                false => {
+                                    first_sep = search_bytes(&buffer, boundary.as_bytes(), buffer_pos);
+                                    if first_sep != -1 {
+                                        if start_old_search_boundary_pos == -1 {
+                                            start_old_search_boundary_pos = first_sep + 2;
+                                        }
+                                        second_sep = search_bytes(&buffer[start_old_search_boundary_pos as usize..], boundary.as_bytes(), buffer_pos);
+                                        start_old_search_boundary_pos = buffer_pos as i32;
                                     }
 
-                                    let mut map = mutex_btree_image_arc.lock().unwrap_or_else(|_| std::process::exit(1));
-                                    let mut counter = mutex_counter_arc.lock().unwrap_or_else(|_| std::process::exit(1));
-                                    *counter += 1;
-                                    map.insert(*counter, msg);
+                                    if first_sep != -1 && second_sep != -1 {
+                                        let image_start_pos = search_bytes(&buffer, b"\xFF\xD8", buffer_pos);
+                                        let mut image_end_pos = -1;
+                                        if image_start_pos != -1 {
+                                            image_end_pos = search_bytes(&buffer[image_start_pos as usize..], b"\xFF\xD9", buffer_pos);
+                                        }
 
-                                    println!("IMAGE ...  !!!");
+                                        if image_start_pos != -1 && image_end_pos != -1 {
+                                            let HEADER_IMAGE = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_end_pos as usize + b"\xFF\xD9".len());
+                                            let mut msg = vec![0; HEADER_IMAGE.len() + image_end_pos as usize + b"\xFF\xD9".len()];
+                                            for (i, ch) in HEADER_IMAGE.bytes().enumerate() {
+                                                msg[i] = ch;
+                                            }
+                                            for i in image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() {
+                                                msg[i + HEADER_IMAGE.len() - image_start_pos as usize] = buffer[i];
+                                            }
+
+                                            {
+                                                let mut map = mutex_btree_image_arc.lock().unwrap_or_else(|_| std::process::exit(1));
+                                                let mut counter = mutex_counter_arc.lock().unwrap_or_else(|_| std::process::exit(1));
+                                                *counter += 1;
+                                                map.insert(*counter, msg);
+                                            }
+
+
+                                            let mut buffer_update_pos = 0;
+                                            for i in image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos {
+                                                buffer.swap(i, i - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()));
+                                                buffer_update_pos += 1;
+                                            }
+                                            buffer_pos = buffer_update_pos;
+                                            first_sep = -1;
+                                            second_sep = -1;
+                                            start_old_search_boundary_pos = -1;
+                                        }
+                                    }
                                 }
-                                println!("Sent data, awaiting reply...");
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    println!("Failed to connect: {}", e);
+                    Err(e) => {
+                        continue;
+                    }
                 }
             }
         });
+
         let mut last_image_id = 0;
         loop {
             const MAX_EVENTS: usize = 100;
@@ -201,7 +273,6 @@ impl MjpegServer {
                 if *fd == 0 {
                     break;
                 }
-                println!("Close connection fd = {}", *fd);
                 self.data.remove(fd);
             }
             /*
@@ -211,7 +282,6 @@ impl MjpegServer {
                 if *fd == 0 {
                     break;
                 }
-                println!("New connection fd = {}", *fd);
 
                 let number;
                 {
@@ -238,7 +308,6 @@ impl MjpegServer {
                 if *fd == 0 {
                     break;
                 }
-                println!("Readable connection fd = {}", *fd);
                 let mut buffer: [c_uchar; 4096] = [0; 4096];
                 let res = unsafe {
                     read_socket(*fd, buffer.as_mut_ptr(), 4096)
@@ -249,7 +318,6 @@ impl MjpegServer {
                         buffer_utf8.push(ch);
                     }
                 }
-                println!("{}", buffer_utf8);
                 let res = unsafe {
                     access_write_socket(self.epoll_fd, *fd)
                 };
@@ -329,7 +397,6 @@ impl MjpegServer {
                                 }
                             } else {
                                 while data.image_index <= max_image_index {
-                                    println!("image index = {}", data.image_index);
                                     match map.get(&data.image_index) {
                                         Some(bytes) => {
                                             data.payload_pos = 0;
@@ -419,6 +486,9 @@ impl MjpegServer {
             for fd in bad_connections {
                 self.data.remove(&fd);
             }
+
+            let mut counter_active_sessions = self.mutex_counter_active_sessions.lock().unwrap();
+            *counter_active_sessions = self.data.len() as u64;
         }
     }
 }

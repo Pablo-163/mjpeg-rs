@@ -8,7 +8,8 @@ fn main() {
     env_logger::init();
     let address = "0.0.0.0";
     let port = 9009;
-    let server = MjpegServer::new(address, port);
+    // 213.193.89.202:80
+    let server = MjpegServer::new(address, port, "62.194.252.21:82", "/mjpg/video.mjpg");
     if let Err(err) = server {
         error!("{}", err);
         std::process::exit(1);
