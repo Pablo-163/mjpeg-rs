@@ -1,20 +1,16 @@
 extern crate libc;
+extern crate base64;
 
 use std::fmt;
-use std::os::raw::{c_int, c_schar, c_uchar};
+use std::os::raw::{c_int, c_uchar};
 use std::os::raw::c_char;
 use std::ffi::CString;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap};
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::borrow::BorrowMut;
-use std::slice::SliceIndex;
-use std::ops::DerefMut;
 use std::net::TcpStream;
 use std::io::{Read, Write};
-use std::str::from_utf8;
-use std::mem::swap;
 use std::thread::sleep;
 
 extern "C" {
@@ -70,6 +66,13 @@ struct Data {
     payload_pos: isize,
 }
 
+#[derive(Clone)]
+pub enum HttpAuth {
+    NoneAuthType = 0,
+    BasicAuthType = 1,
+    DigestAuthType = 2,
+}
+
 pub struct MjpegServer {
     fd: i32,
     epoll_fd: i32,
@@ -80,10 +83,13 @@ pub struct MjpegServer {
     mutex_counter_max: Arc<Mutex<u64>>,
     mutex_counter_min: Arc<Mutex<u64>>,
     mutex_counter_active_sessions: Arc<Mutex<u64>>,
+    auth: HttpAuth,
+    login: String,
+    password: String,
 }
 
 impl MjpegServer {
-    pub fn new(address: &str, port: i32, video_source_ip: &str, video_source_uri: &str) -> Result<Self, MjpegServerError> {
+    pub fn new(address: &str, port: i32, video_source_ip: &str, video_source_uri: &str, auth: HttpAuth, login : &str, password: &str) -> Result<Self, MjpegServerError> {
         let address_c = CString::new(address).expect("CString::new failed");
         let fd = unsafe {
             create_socket(address_c.as_ptr(), port)
@@ -112,6 +118,9 @@ impl MjpegServer {
             mutex_counter_max: Arc::new(Mutex::new(0)),
             mutex_counter_min: Arc::new(Mutex::new(0)),
             mutex_counter_active_sessions: Arc::new(Mutex::new(0)),
+            auth,
+            login: String::from(login),
+            password: String::from(password),
         })
     }
     pub fn run(&mut self) {
@@ -125,23 +134,48 @@ impl MjpegServer {
         let mutex_counter_active_session_arc = self.mutex_counter_active_sessions.clone();
         let video_source_ip = self.video_source_ip.clone();
         let video_source_uri = self.video_source_uri.clone();
-        thread::spawn(move || {
 
-            // 213.193.89.202
+        let auth = self.auth.clone();
+        let login = self.login.clone();
+        let password = self.password.clone();
+
+        thread::spawn(move || {
 
             loop {
                 sleep(Duration::from_secs(1));
 
                 match TcpStream::connect(&video_source_ip) {
                     Ok(mut stream) => {
-                        let msg = format!("GET {}\r\n\r\n", &video_source_uri);
-                        stream.write(msg.as_bytes()).unwrap();
+
+                        use base64::{encode};
+                        match auth {
+                            HttpAuth::NoneAuthType => {
+                                let mut msg = format!("GET {}\r\n\r\n", &video_source_uri);
+                                let mut buffer;
+                                unsafe {
+                                    buffer = msg.as_bytes_mut();
+                                }
+                                stream.write_all(&mut buffer).unwrap();
+                            },
+                            HttpAuth::BasicAuthType => {
+                                let mut msg = format!("GET {} HTTP/1.0\r\nAuthorization: Basic {}\r\n\r\n", &video_source_uri, encode(format!("{}:{}", login, password)));
+                                let mut buffer;
+                                unsafe {
+                                    buffer = msg.as_bytes_mut();
+                                }
+                                stream.write_all(&mut buffer).unwrap();
+                            },
+                            HttpAuth::DigestAuthType => {
+                                std::process::exit(1);
+                            }
+                        }
+
 
                         let mut boundary = String::from("");
                         let mut buffer = vec![0; MAX_BUFFER_LENGTH];
                         let mut buffer_pos = 0;
 
-                        let mut first_sep = -1;
+                        let mut first_sep;
                         let mut second_sep = -1;
 
                         let mut start_old_search_boundary_pos = -1;
@@ -151,9 +185,9 @@ impl MjpegServer {
                             {
                                 counter_active_session = *mutex_counter_active_session_arc.lock().unwrap_or_else(|_| std::process::exit(1));
                             }
-                            println!("Connections = {}", counter_active_session);
                             if counter_active_session == 0 {
-                                break;
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                continue;
                             }
 
                             let mut data = [0 as u8; SOCKET_BUFFER_LENGTH];
@@ -171,7 +205,6 @@ impl MjpegServer {
                                 Err(e) => {
                                     const RESOURCE_TEMPORARILY_UNAVAILABLE: i32 = 11;
                                     if e.raw_os_error().unwrap() != RESOURCE_TEMPORARILY_UNAVAILABLE {
-                                        println!("Отработка данной ошибки - потеря соединения");
                                         std::process::exit(1);
                                     }
                                 }
@@ -186,7 +219,7 @@ impl MjpegServer {
                                             Ok(value) => {
                                                 boundary = format!("--{}", value);
                                             },
-                                            Err(err) => {
+                                            Err(_) => {
                                                 break;
                                             }
                                         }
@@ -210,13 +243,13 @@ impl MjpegServer {
                                         }
 
                                         if image_start_pos != -1 && image_end_pos != -1 {
-                                            let HEADER_IMAGE = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_end_pos as usize + b"\xFF\xD9".len());
-                                            let mut msg = vec![0; HEADER_IMAGE.len() + image_end_pos as usize + b"\xFF\xD9".len()];
-                                            for (i, ch) in HEADER_IMAGE.bytes().enumerate() {
+                                            let header_image = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_end_pos as usize + b"\xFF\xD9".len());
+                                            let mut msg = vec![0; header_image.len() + image_end_pos as usize + b"\xFF\xD9".len()];
+                                            for (i, ch) in header_image.bytes().enumerate() {
                                                 msg[i] = ch;
                                             }
                                             for i in image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() {
-                                                msg[i + HEADER_IMAGE.len() - image_start_pos as usize] = buffer[i];
+                                                msg[i + header_image.len() - image_start_pos as usize] = buffer[i];
                                             }
 
                                             {
@@ -233,7 +266,6 @@ impl MjpegServer {
                                                 buffer_update_pos += 1;
                                             }
                                             buffer_pos = buffer_update_pos;
-                                            first_sep = -1;
                                             second_sep = -1;
                                             start_old_search_boundary_pos = -1;
                                         }
@@ -242,8 +274,8 @@ impl MjpegServer {
                             }
                         }
                     }
-                    Err(e) => {
-                        continue;
+                    Err(_) => {
+                        std::process::exit(1);
                     }
                 }
             }

@@ -1,6 +1,6 @@
 [package]
 name = "mjpeg_rs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["myduomilia <myduomilia@gmail.com>"]
 edition = "2018"
 build="build.rs"
@@ -12,6 +12,7 @@ libc="0.2.68"
 errno="0.2.5"
 log = "0.4.8"
 env_logger = "*"
+base64 ="0.12.0"
 
 [build-dependencies]
 cc="1.0.50"
