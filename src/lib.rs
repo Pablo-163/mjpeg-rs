@@ -233,6 +233,7 @@ impl MjpegServer {
                                                 boundary = format!("--{}", value);
                                             }
                                             Err(_) => {
+                                                println!("Invalid data");
                                                 break;
                                             }
                                         }
