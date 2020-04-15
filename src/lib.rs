@@ -5,13 +5,14 @@ use std::fmt;
 use std::os::raw::{c_int, c_uchar};
 use std::os::raw::c_char;
 use std::ffi::CString;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::net::TcpStream;
+use std::net::{TcpStream, SocketAddr, IpAddr, Ipv4Addr, SocketAddrV4};
 use std::io::{Read, Write};
 use std::thread::sleep;
+use std::str::FromStr;
 
 extern "C" {
     fn create_socket(address: *const c_char, port: c_int) -> c_int;
@@ -89,7 +90,7 @@ pub struct MjpegServer {
 }
 
 impl MjpegServer {
-    pub fn new(address: &str, port: i32, video_source_ip: &str, video_source_uri: &str, auth: HttpAuth, login : &str, password: &str) -> Result<Self, MjpegServerError> {
+    pub fn new(address: &str, port: i32, video_source_ip: &str, video_source_uri: &str, auth: HttpAuth, login: &str, password: &str) -> Result<Self, MjpegServerError> {
         let address_c = CString::new(address).expect("CString::new failed");
         let fd = unsafe {
             create_socket(address_c.as_ptr(), port)
@@ -132,7 +133,7 @@ impl MjpegServer {
         let mutex_btree_image_arc = self.mutex_queue_images.clone();
         let mutex_counter_arc = self.mutex_counter_max.clone();
         let mutex_counter_active_session_arc = self.mutex_counter_active_sessions.clone();
-        let video_source_ip = self.video_source_ip.clone();
+        let mut video_source_ip = self.video_source_ip.clone();
         let video_source_uri = self.video_source_uri.clone();
 
         let auth = self.auth.clone();
@@ -140,14 +141,11 @@ impl MjpegServer {
         let password = self.password.clone();
 
         thread::spawn(move || {
-
             loop {
-                sleep(Duration::from_secs(1));
-
-                match TcpStream::connect(&video_source_ip) {
+                let sock_address = SocketAddr::from_str(&video_source_ip).unwrap_or_else(|_| std::process::exit(1));
+                match TcpStream::connect_timeout(&sock_address, Duration::from_secs(10)) {
                     Ok(mut stream) => {
-
-                        use base64::{encode};
+                        use base64::encode;
                         match auth {
                             HttpAuth::NoneAuthType => {
                                 let mut msg = format!("GET {}\r\n\r\n", &video_source_uri);
@@ -155,16 +153,30 @@ impl MjpegServer {
                                 unsafe {
                                     buffer = msg.as_bytes_mut();
                                 }
-                                stream.write_all(&mut buffer).unwrap();
-                            },
+                                stream.set_write_timeout(Some(Duration::from_secs(10)));
+                                match stream.write_all(&mut buffer) {
+                                    Ok(_)=>{
+                                    },
+                                    Err(e) => {
+                                        break;
+                                    }
+                                }
+                            }
                             HttpAuth::BasicAuthType => {
                                 let mut msg = format!("GET {} HTTP/1.0\r\nAuthorization: Basic {}\r\n\r\n", &video_source_uri, encode(format!("{}:{}", login, password)));
                                 let mut buffer;
                                 unsafe {
                                     buffer = msg.as_bytes_mut();
                                 }
-                                stream.write_all(&mut buffer).unwrap();
-                            },
+                                stream.set_write_timeout(Some(Duration::from_secs(10)));
+                                match stream.write_all(&mut buffer) {
+                                    Ok(_)=>{
+                                    },
+                                    Err(e) => {
+                                        break;
+                                    }
+                                }
+                            }
                             HttpAuth::DigestAuthType => {
                                 std::process::exit(1);
                             }
@@ -180,7 +192,6 @@ impl MjpegServer {
 
                         let mut start_old_search_boundary_pos = -1;
                         loop {
-
                             let counter_active_session;
                             {
                                 counter_active_session = *mutex_counter_active_session_arc.lock().unwrap_or_else(|_| std::process::exit(1));
@@ -203,10 +214,12 @@ impl MjpegServer {
                                     buffer_pos += n;
                                 }
                                 Err(e) => {
-                                    const RESOURCE_TEMPORARILY_UNAVAILABLE: i32 = 11;
-                                    if e.raw_os_error().unwrap() != RESOURCE_TEMPORARILY_UNAVAILABLE {
-                                        std::process::exit(1);
-                                    }
+                                    // const RESOURCE_TEMPORARILY_UNAVAILABLE: i32 = 11;
+                                    // if e.raw_os_error().unwrap() != RESOURCE_TEMPORARILY_UNAVAILABLE {
+                                    //     println!("Connection lose");
+                                    //     break;
+                                    // }
+                                    break;
                                 }
                             }
                             match boundary.is_empty() {
@@ -218,8 +231,9 @@ impl MjpegServer {
                                         match res {
                                             Ok(value) => {
                                                 boundary = format!("--{}", value);
-                                            },
+                                            }
                                             Err(_) => {
+                                                println!("Invalid data");
                                                 break;
                                             }
                                         }
@@ -274,9 +288,7 @@ impl MjpegServer {
                             }
                         }
                     }
-                    Err(_) => {
-                        std::process::exit(1);
-                    }
+                    Err(_) => {}
                 }
             }
         });
