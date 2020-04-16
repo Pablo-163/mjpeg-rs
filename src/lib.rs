@@ -268,10 +268,11 @@ impl MjpegServer {
 
 
                                             let mut mutex = mutex_counter_max_clone.lock().unwrap_or_else(|_| std::process::exit(1));
+                                            let value = *mutex + 1;
                                             *mutex += 1;
                                             drop(mutex);
                                             let mut mutex = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
-                                            mutex.insert(*counter, msg);
+                                            mutex.insert(value, msg);
                                             drop(mutex);
 
                                             let mut buffer_update_pos = 0;
