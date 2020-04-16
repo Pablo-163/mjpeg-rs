@@ -80,7 +80,7 @@ pub struct MjpegServer {
     data: HashMap<i32, Data>,
     video_source_ip: String,
     video_source_uri: String,
-    mutex_queue_images: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+    mutex_image_queue: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     mutex_counter_max: Arc<Mutex<u64>>,
     mutex_counter_min: Arc<Mutex<u64>>,
     mutex_counter_active_sessions: Arc<Mutex<u64>>,
@@ -115,7 +115,7 @@ impl MjpegServer {
             video_source_ip: String::from(video_source_ip),
             video_source_uri: String::from(video_source_uri),
             data: HashMap::<i32, Data>::new(),
-            mutex_queue_images: Arc::new(Mutex::new(HashMap::new())),
+            mutex_image_queue: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
             mutex_counter_min: Arc::new(Mutex::new(0)),
             mutex_counter_active_sessions: Arc::new(Mutex::new(0)),
@@ -130,9 +130,9 @@ impl MjpegServer {
         */
         const MAX_BUFFER_LENGTH: usize = 1024 * 1024 * 12;
         const SOCKET_BUFFER_LENGTH: usize = 4096;
-        let mutex_btree_image_arc = self.mutex_queue_images.clone();
-        let mutex_counter_arc = self.mutex_counter_max.clone();
-        let mutex_counter_active_session_arc = self.mutex_counter_active_sessions.clone();
+        let mutex_image_queue_clone = self.mutex_image_queue.clone();
+        let mutex_counter_max_clone = self.mutex_counter_max.clone();
+        let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
         let mut video_source_ip = self.video_source_ip.clone();
         let video_source_uri = self.video_source_uri.clone();
 
@@ -194,7 +194,7 @@ impl MjpegServer {
                         loop {
                             let counter_active_session;
                             {
-                                counter_active_session = *mutex_counter_active_session_arc.lock().unwrap_or_else(|_| std::process::exit(1));
+                                counter_active_session = *mutex_counter_active_sessions_clone.lock().unwrap_or_else(|_| std::process::exit(1));
                             }
                             if counter_active_session == 0 {
                                 std::thread::sleep(std::time::Duration::from_secs(1));
@@ -233,7 +233,6 @@ impl MjpegServer {
                                                 boundary = format!("--{}", value);
                                             }
                                             Err(_) => {
-                                                println!("Invalid data");
                                                 break;
                                             }
                                         }
@@ -267,8 +266,8 @@ impl MjpegServer {
                                             }
 
                                             {
-                                                let mut map = mutex_btree_image_arc.lock().unwrap_or_else(|_| std::process::exit(1));
-                                                let mut counter = mutex_counter_arc.lock().unwrap_or_else(|_| std::process::exit(1));
+                                                let mut map = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
+                                                let mut counter = mutex_counter_max_clone.lock().unwrap_or_else(|_| std::process::exit(1));
                                                 *counter += 1;
                                                 map.insert(*counter, msg);
                                             }
@@ -288,7 +287,8 @@ impl MjpegServer {
                             }
                         }
                     }
-                    Err(_) => {}
+                    Err(_) => {
+                    }
                 }
             }
         });
@@ -314,7 +314,7 @@ impl MjpegServer {
             * Список закрытых сокетов, зачищаем данные
             */
             for fd in closed_sockets.iter() {
-                if *fd == 0 {
+                if *fd != 0 {
                     break;
                 }
                 self.data.remove(fd);
@@ -329,7 +329,7 @@ impl MjpegServer {
 
                 let number;
                 {
-                    number = *self.mutex_counter_max.lock().unwrap();
+                    number = *self.mutex_counter_max.lock().unwrap_or_else(|_| std::process::exit(1));
                 }
 
                 let data = Data {
@@ -377,8 +377,8 @@ impl MjpegServer {
                 if *fd == 0 {
                     break;
                 }
-                let map = self.mutex_queue_images.lock().unwrap();
-                let max_image_index = *self.mutex_counter_max.lock().unwrap();
+                let map = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
+                let max_image_index = *self.mutex_counter_max.lock().unwrap_or_else(|_| std::process::exit(1));
                 if !map.is_empty() {
                     if let Some(data) = self.data.get_mut(fd) {
                         if data.header_len > 0 {
@@ -488,22 +488,22 @@ impl MjpegServer {
             */
             let mut keys = vec![];
             {
-                let btree_image = self.mutex_queue_images.lock().unwrap();
-                for key in btree_image.keys() {
+                let image_queue = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
+                for key in image_queue.keys() {
                     keys.push(*key);
                 }
                 keys.sort();
             }
 
             {
-                let mut queue_images = self.mutex_queue_images.lock().unwrap();
-                if queue_images.len() > 100 {
-                    let mut count = queue_images.len() - 100;
+                let mut image_queue = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
+                if image_queue.len() > 100 {
+                    let mut count = image_queue.len() - 100;
                     for key in &keys {
                         if count == 0 {
                             break;
                         }
-                        queue_images.remove(key);
+                        image_queue.remove(key);
                         count -= 1;
                     }
                 }
@@ -531,7 +531,7 @@ impl MjpegServer {
                 self.data.remove(&fd);
             }
 
-            let mut counter_active_sessions = self.mutex_counter_active_sessions.lock().unwrap();
+            let mut counter_active_sessions = self.mutex_counter_active_sessions.lock().unwrap_or_else(|_| std::process::exit(1));
             *counter_active_sessions = self.data.len() as u64;
         }
     }
