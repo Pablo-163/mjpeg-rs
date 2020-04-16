@@ -478,6 +478,7 @@ impl MjpegServer {
                                         }
                                         _ => {
                                             data.image_index += 1;
+                                            break;
                                         }
                                     }
                                 }
