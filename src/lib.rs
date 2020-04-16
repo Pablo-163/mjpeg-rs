@@ -142,9 +142,12 @@ impl MjpegServer {
 
         thread::spawn(move || {
             loop {
+
+                println!("New connection");
                 let sock_address = SocketAddr::from_str(&video_source_ip).unwrap_or_else(|_| std::process::exit(1));
                 match TcpStream::connect_timeout(&sock_address, Duration::from_secs(10)) {
                     Ok(mut stream) => {
+                        println!("Accept connection");
                         use base64::encode;
                         match auth {
                             HttpAuth::NoneAuthType => {
@@ -198,6 +201,7 @@ impl MjpegServer {
                             drop(mutex);
 
                             if counter_active_session == 0 {
+                                println!("Sessions not exist");
                                 std::thread::sleep(std::time::Duration::from_secs(1));
                                 continue;
                             }
@@ -273,6 +277,7 @@ impl MjpegServer {
                                             drop(mutex);
                                             let mut mutex = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
                                             mutex.insert(value, msg);
+                                            println!("New image");
                                             drop(mutex);
 
                                             let mut buffer_update_pos = 0;
@@ -290,6 +295,7 @@ impl MjpegServer {
                         }
                     }
                     Err(_) => {
+                        println!("Error connection");
                     }
                 }
             }
@@ -478,6 +484,7 @@ impl MjpegServer {
                                         }
                                         _ => {
                                             data.image_index += 1;
+                                            break;
                                         }
                                     }
                                 }
