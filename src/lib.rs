@@ -329,15 +329,13 @@ impl MjpegServer {
             /*
             * Список вновь присоединенных сокетов, заводим структуру данных для каждого.
             */
+            let mutex = self.mutex_counter_max.lock().unwrap_or_else(|_| std::process::exit(1));
+            let number = *mutex;
+            drop(mutex);
             for fd in connected_sockets.iter() {
                 if *fd == 0 {
                     break;
                 }
-
-                let mutex = self.mutex_counter_max.lock().unwrap_or_else(|_| std::process::exit(1));
-                let number = *mutex;
-                drop(mutex);
-
                 let data = Data {
                     auth: true,
                     header_len: HEADER.len() as i32,
@@ -346,9 +344,9 @@ impl MjpegServer {
                     payload_len: 0,
                     payload_pos: 0,
                 };
-
                 self.connections.insert(*fd, data);
             }
+
             /*
             * Читаем данные из сокета, нужно только для первого запроса на авторизацию
             * Разбираем заголовок извлекаем token и проводим авторизацию,
@@ -377,6 +375,10 @@ impl MjpegServer {
                     }
                     self.connections.remove(fd);
                 }
+            }
+
+            if last_image_id == 0 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
 
             for fd in writeable_sockets.iter() {
@@ -492,6 +494,7 @@ impl MjpegServer {
                             }
                         }
                     }
+                }else {
                 }
 
                 // println!("Writeable connection fd = {}", *fd);
