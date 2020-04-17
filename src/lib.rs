@@ -28,6 +28,9 @@ extern "C" {
 static HEADER: &str = "HTTP/1.0 200 OK\x0d\x0aConnection: keep-alive\x0d\x0aMax-Age: 0\x0d\x0aExpires: 0\x0d\x0aCache-Control: no-cache, private\x0d\x0aPragma: no-cache\x0d\x0aContent-Type: multipart/x-mixed-replace; boundary=mjpegstream\x0d\x0a\x0d\x0a";
 
 fn search_bytes(buffer: &[u8], pattern: &[u8], limit: usize) -> i32 {
+    if buffer.len() < pattern.len() {
+        return -1;
+    }
     let len = buffer.len() - pattern.len() + 1;
     for i in 0..len {
         if i >= limit {
