@@ -236,13 +236,15 @@ impl MjpegServer {
                                     let boundary_start_pos = search_bytes(&buffer, b"boundary=", buffer_pos);
                                     if boundary_start_pos != -1 {
                                         let boundary_end_pos = search_bytes(&buffer[boundary_start_pos as usize..], b"\r\n\r\n", buffer_pos);
-                                        let res = String::from_utf8(Vec::from(&buffer[boundary_start_pos as usize + b"boundary=".len()..boundary_start_pos as usize + boundary_end_pos as usize]));
-                                        match res {
-                                            Ok(value) => {
-                                                boundary = format!("--{}", value);
-                                            }
-                                            Err(_) => {
-                                                break;
+                                        if boundary_end_pos != -1 {
+                                            let res = String::from_utf8(Vec::from(&buffer[boundary_start_pos as usize + b"boundary=".len()..boundary_start_pos as usize + boundary_end_pos as usize]));
+                                            match res {
+                                                Ok(value) => {
+                                                    boundary = format!("--{}", value);
+                                                }
+                                                Err(_) => {
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
