@@ -77,7 +77,7 @@ pub enum HttpAuth {
 pub struct MjpegServer {
     fd: i32,
     epoll_fd: i32,
-    data: HashMap<i32, Data>,
+    connections: HashMap<i32, Data>,
     video_source_ip: String,
     video_source_uri: String,
     mutex_image_queue: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
@@ -114,7 +114,7 @@ impl MjpegServer {
             epoll_fd,
             video_source_ip: String::from(video_source_ip),
             video_source_uri: String::from(video_source_uri),
-            data: HashMap::<i32, Data>::new(),
+            connections: HashMap::<i32, Data>::new(),
             mutex_image_queue: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
             mutex_counter_min: Arc::new(Mutex::new(0)),
@@ -324,7 +324,7 @@ impl MjpegServer {
                 if *fd != 0 {
                     break;
                 }
-                self.data.remove(fd);
+                self.connections.remove(fd);
             }
             /*
             * Список вновь присоединенных сокетов, заводим структуру данных для каждого.
@@ -347,7 +347,7 @@ impl MjpegServer {
                     payload_pos: 0,
                 };
 
-                self.data.insert(*fd, data);
+                self.connections.insert(*fd, data);
             }
             /*
             * Читаем данные из сокета, нужно только для первого запроса на авторизацию
@@ -375,7 +375,7 @@ impl MjpegServer {
                     unsafe {
                         close_socket(*fd);
                     }
-                    self.data.remove(fd);
+                    self.connections.remove(fd);
                 }
             }
 
@@ -388,22 +388,22 @@ impl MjpegServer {
                 let max_image_index = *mutex;
                 drop(mutex);
 
-                let map = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
-                if !map.is_empty() {
-                    if let Some(data) = self.data.get_mut(fd) {
-                        if data.header_len > 0 {
+                let mutex_image_queue = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
+                if !mutex_image_queue.is_empty() {
+                    if let Some(connection) = self.connections.get_mut(fd) {
+                        if connection.header_len > 0 {
                             let res = unsafe {
-                                write_socket(*fd, HEADER.as_ptr().offset(data.header_pos), data.header_len)
+                                write_socket(*fd, HEADER.as_ptr().offset(connection.header_pos), connection.header_len)
                             };
                             if res == -1 {
                                 unsafe {
                                     close_socket(*fd);
                                 }
-                                self.data.remove(fd);
+                                self.connections.remove(fd);
                             } else {
-                                data.header_len -= res;
-                                data.header_pos += res as isize;
-                                if data.header_len == 0 {
+                                connection.header_len -= res;
+                                connection.header_pos += res as isize;
+                                if connection.header_len == 0 {
                                     let res = unsafe {
                                         denied_write_and_read_socket(self.epoll_fd, *fd)
                                     };
@@ -411,27 +411,27 @@ impl MjpegServer {
                                         unsafe {
                                             close_socket(*fd);
                                         }
-                                        self.data.remove(fd);
+                                        self.connections.remove(fd);
                                     }
                                 }
                             }
                         } else {
-                            if data.payload_len > 0 {
-                                match map.get(&data.image_index) {
+                            if connection.payload_len > 0 {
+                                match mutex_image_queue.get(&connection.image_index) {
                                     Some(bytes) => {
                                         let res = unsafe {
-                                            write_socket(*fd, bytes.as_ptr().offset(data.payload_pos), data.payload_len)
+                                            write_socket(*fd, bytes.as_ptr().offset(connection.payload_pos), connection.payload_len)
                                         };
                                         if res == -1 {
                                             unsafe {
                                                 close_socket(*fd);
                                             }
-                                            self.data.remove(fd);
+                                            self.connections.remove(fd);
                                         } else {
-                                            data.payload_len -= res;
-                                            data.payload_pos += res as isize;
-                                            if data.payload_len == 0 {
-                                                data.image_index += 1;
+                                            connection.payload_len -= res;
+                                            connection.payload_pos += res as isize;
+                                            if connection.payload_len == 0 {
+                                                connection.image_index += 1;
                                                 let res = unsafe {
                                                     denied_write_and_read_socket(self.epoll_fd, *fd)
                                                 };
@@ -439,36 +439,38 @@ impl MjpegServer {
                                                     unsafe {
                                                         close_socket(*fd);
                                                     }
-                                                    self.data.remove(fd);
+                                                    self.connections.remove(fd);
                                                 }
                                             }
                                         }
                                         // break;
                                     }
                                     _ => {
-                                        data.image_index += 1;
+                                        connection.payload_len = 0;
+                                        connection.payload_pos = 0;
+                                        // connection.image_index += 1;
                                     }
                                 }
                             } else {
-                                while data.image_index <= max_image_index {
-                                    match map.get(&data.image_index) {
+                                while connection.image_index <= max_image_index {
+                                    match mutex_image_queue.get(&connection.image_index) {
                                         Some(bytes) => {
-                                            data.payload_pos = 0;
-                                            data.payload_len = bytes.len() as i32;
+                                            connection.payload_pos = 0;
+                                            connection.payload_len = bytes.len() as i32;
                                             let res = unsafe {
-                                                write_socket(*fd, bytes.as_ptr().offset(data.payload_pos), data.payload_len)
+                                                write_socket(*fd, bytes.as_ptr().offset(connection.payload_pos), connection.payload_len)
                                             };
                                             if res == -1 {
                                                 unsafe {
                                                     close_socket(*fd);
                                                 }
-                                                self.data.remove(fd);
+                                                self.connections.remove(fd);
                                                 break;
                                             } else {
-                                                data.payload_len -= res;
-                                                data.payload_pos += res as isize;
-                                                if data.payload_len == 0 {
-                                                    data.image_index += 1;
+                                                connection.payload_len -= res;
+                                                connection.payload_pos += res as isize;
+                                                if connection.payload_len == 0 {
+                                                    connection.image_index += 1;
                                                     let res = unsafe {
                                                         denied_write_and_read_socket(self.epoll_fd, *fd)
                                                     };
@@ -476,15 +478,14 @@ impl MjpegServer {
                                                         unsafe {
                                                             close_socket(*fd);
                                                         }
-                                                        self.data.remove(fd);
+                                                        self.connections.remove(fd);
                                                     }
                                                 }
                                             }
                                             break;
                                         }
                                         _ => {
-                                            data.image_index += 1;
-                                            break;
+                                            connection.image_index += 1;
                                         }
                                     }
                                 }
@@ -525,7 +526,7 @@ impl MjpegServer {
 
             if !keys.is_empty() && last_image_id < keys[keys.len() - 1].clone() {
                 last_image_id = keys[keys.len() - 1];
-                for (fd, data) in &self.data {
+                for (fd, data) in &self.connections {
                     if data.auth == true && data.payload_len == 0 {
                         let res = unsafe {
                             access_write_socket(self.epoll_fd, *fd)
@@ -540,11 +541,11 @@ impl MjpegServer {
                 }
             }
             for fd in bad_connections {
-                self.data.remove(&fd);
+                self.connections.remove(&fd);
             }
 
             let mut mutex = self.mutex_counter_active_sessions.lock().unwrap_or_else(|_| std::process::exit(1));
-            *mutex = self.data.len() as u64;
+            *mutex = self.connections.len() as u64;
         }
     }
 }
