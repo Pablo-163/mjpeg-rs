@@ -146,6 +146,7 @@ impl MjpegServer {
                 let sock_address = SocketAddr::from_str(&video_source_ip).unwrap_or_else(|_| std::process::exit(1));
                 match TcpStream::connect_timeout(&sock_address, Duration::from_secs(10)) {
                     Ok(mut stream) => {
+                        let mut ready = true;
                         use base64::encode;
                         match auth {
                             HttpAuth::NoneAuthType => {
@@ -159,7 +160,7 @@ impl MjpegServer {
                                     Ok(_)=>{
                                     },
                                     Err(e) => {
-                                        std::process::exit(1);
+                                        ready = false;
                                     }
                                 }
                             }
@@ -174,13 +175,16 @@ impl MjpegServer {
                                     Ok(_)=>{
                                     },
                                     Err(e) => {
-                                        std::process::exit(1);
+                                        ready = false;
                                     }
                                 }
                             }
                             HttpAuth::DigestAuthType => {
                                 std::process::exit(1);
                             }
+                        }
+                        if !ready {
+                            continue;
                         }
 
 
