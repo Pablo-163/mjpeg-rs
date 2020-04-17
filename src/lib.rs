@@ -201,7 +201,6 @@ impl MjpegServer {
                             drop(mutex);
 
                             if counter_active_session == 0 {
-                                println!("Sessions not exist");
                                 std::thread::sleep(std::time::Duration::from_secs(1));
                                 continue;
                             }
@@ -277,7 +276,6 @@ impl MjpegServer {
                                             drop(mutex);
                                             let mut mutex = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
                                             mutex.insert(value, msg);
-                                            println!("New image");
                                             drop(mutex);
 
                                             let mut buffer_update_pos = 0;
@@ -444,7 +442,6 @@ impl MjpegServer {
                                                 }
                                             }
                                         }
-                                        break;
                                     }
                                     _ => {
                                         data.image_index += 1;
