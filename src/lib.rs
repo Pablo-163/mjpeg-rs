@@ -459,6 +459,7 @@ impl MjpegServer {
                                                     close_socket(*fd);
                                                 }
                                                 self.data.remove(fd);
+                                                break;
                                             } else {
                                                 data.payload_len -= res;
                                                 data.payload_pos += res as isize;
