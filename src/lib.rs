@@ -212,7 +212,7 @@ impl MjpegServer {
                             match stream.read(&mut data) {
                                 Ok(n) => {
                                     if n == 0 {
-                                        std::process::exit(1);
+                                        break;
                                     }
                                     if buffer_pos + n >= MAX_BUFFER_LENGTH {
                                         std::process::exit(1);
