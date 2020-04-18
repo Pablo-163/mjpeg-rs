@@ -9,9 +9,8 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::net::{TcpStream, SocketAddr, IpAddr, Ipv4Addr, SocketAddrV4};
+use std::net::{TcpStream, SocketAddr};
 use std::io::{Read, Write};
-use std::thread::sleep;
 use std::str::FromStr;
 
 extern "C" {
@@ -85,7 +84,6 @@ pub struct MjpegServer {
     video_source_uri: String,
     mutex_image_queue: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     mutex_counter_max: Arc<Mutex<u64>>,
-    mutex_counter_min: Arc<Mutex<u64>>,
     mutex_counter_active_sessions: Arc<Mutex<u64>>,
     auth: HttpAuth,
     login: String,
@@ -120,7 +118,6 @@ impl MjpegServer {
             connections: HashMap::<i32, Data>::new(),
             mutex_image_queue: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
-            mutex_counter_min: Arc::new(Mutex::new(0)),
             mutex_counter_active_sessions: Arc::new(Mutex::new(0)),
             auth,
             login: String::from(login),
@@ -136,7 +133,7 @@ impl MjpegServer {
         let mutex_image_queue_clone = self.mutex_image_queue.clone();
         let mutex_counter_max_clone = self.mutex_counter_max.clone();
         let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
-        let mut video_source_ip = self.video_source_ip.clone();
+        let video_source_ip = self.video_source_ip.clone();
         let video_source_uri = self.video_source_uri.clone();
 
         let auth = self.auth.clone();
@@ -158,10 +155,10 @@ impl MjpegServer {
                                 unsafe {
                                     buffer = msg.as_bytes_mut();
                                 }
-                                stream.set_write_timeout(Some(Duration::from_secs(10)));
+                                stream.set_write_timeout(Some(Duration::from_secs(10))).unwrap_or_else(|_|std::process::exit(1));
                                 match stream.write_all(&mut buffer) {
                                     Ok(_) => {}
-                                    Err(e) => {
+                                    Err(_) => {
                                         ready = false;
                                     }
                                 }
@@ -173,10 +170,10 @@ impl MjpegServer {
                                 unsafe {
                                     buffer = msg.as_bytes_mut();
                                 }
-                                stream.set_write_timeout(Some(Duration::from_secs(10)));
+                                stream.set_write_timeout(Some(Duration::from_secs(10))).unwrap_or_else(|_|std::process::exit(1));
                                 match stream.write_all(&mut buffer) {
                                     Ok(_) => {}
-                                    Err(e) => {
+                                    Err(_) => {
                                         ready = false;
                                     }
                                 }
@@ -222,7 +219,7 @@ impl MjpegServer {
                                     }
                                     buffer_pos += n;
                                 }
-                                Err(e) => {
+                                Err(_) => {
                                     // const RESOURCE_TEMPORARILY_UNAVAILABLE: i32 = 11;
                                     // if e.raw_os_error().unwrap() != RESOURCE_TEMPORARILY_UNAVAILABLE {
                                     //     println!("Connection lose");
@@ -402,6 +399,12 @@ impl MjpegServer {
                 let res = unsafe {
                     read_socket(*fd, buffer.as_mut_ptr(), 4096)
                 };
+                if res == -1 {
+                    unsafe {
+                        close_socket(*fd);
+                    }
+                    self.connections.remove(fd);
+                }
                 let res = unsafe {
                     access_write_socket(self.epoll_fd, *fd)
                 };
