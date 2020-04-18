@@ -145,11 +145,11 @@ impl MjpegServer {
 
         thread::spawn(move || {
             loop {
-
                 let sock_address = SocketAddr::from_str(&video_source_ip).unwrap_or_else(|_| std::process::exit(1));
                 match TcpStream::connect_timeout(&sock_address, Duration::from_secs(10)) {
                     Ok(mut stream) => {
                         let mut ready = true;
+                        let mut is_auth = false;
                         use base64::encode;
                         match auth {
                             HttpAuth::NoneAuthType => {
@@ -160,12 +160,12 @@ impl MjpegServer {
                                 }
                                 stream.set_write_timeout(Some(Duration::from_secs(10)));
                                 match stream.write_all(&mut buffer) {
-                                    Ok(_)=>{
-                                    },
+                                    Ok(_) => {}
                                     Err(e) => {
                                         ready = false;
                                     }
                                 }
+                                is_auth = true;
                             }
                             HttpAuth::BasicAuthType => {
                                 let mut msg = format!("GET {} HTTP/1.0\r\nAuthorization: Basic {}\r\n\r\n", &video_source_uri, encode(format!("{}:{}", login, password)));
@@ -175,8 +175,7 @@ impl MjpegServer {
                                 }
                                 stream.set_write_timeout(Some(Duration::from_secs(10)));
                                 match stream.write_all(&mut buffer) {
-                                    Ok(_)=>{
-                                    },
+                                    Ok(_) => {}
                                     Err(e) => {
                                         ready = false;
                                     }
@@ -190,7 +189,6 @@ impl MjpegServer {
                             continue;
                         }
 
-
                         let mut boundary = String::from("");
                         let mut buffer = vec![0; MAX_BUFFER_LENGTH];
                         let mut buffer_pos = 0;
@@ -200,9 +198,8 @@ impl MjpegServer {
 
                         let mut start_old_search_boundary_pos = -1;
                         loop {
-
                             let mutex = mutex_counter_active_sessions_clone.lock().unwrap_or_else(|_| std::process::exit(1));
-                            let counter_active_session= *mutex;
+                            let counter_active_session = *mutex;
                             drop(mutex);
 
                             if counter_active_session == 0 {
@@ -231,76 +228,98 @@ impl MjpegServer {
                                     break;
                                 }
                             }
-                            match boundary.is_empty() {
-                                true => {
-                                    let boundary_start_pos = search_bytes(&buffer, b"boundary=", buffer_pos);
-                                    if boundary_start_pos != -1 {
-                                        let boundary_end_pos = search_bytes(&buffer[boundary_start_pos as usize..], b"\r\n\r\n", buffer_pos);
-                                        if boundary_end_pos != -1 {
-                                            let res = String::from_utf8(Vec::from(&buffer[boundary_start_pos as usize + b"boundary=".len()..boundary_start_pos as usize + boundary_end_pos as usize]));
-                                            match res {
-                                                Ok(value) => {
-                                                    boundary = format!("--{}", value);
-                                                }
-                                                Err(_) => {
-                                                    break;
+
+                            if boundary.is_empty() {
+                                let res = search_bytes(&buffer, b"\r\n\r\n", buffer_pos);
+                                match res {
+                                    -1 => {
+                                        continue;
+                                    }
+                                    _ => {
+                                        /*
+                                        * Извлекаем boundary
+                                        */
+                                        let boundary_start_pos = search_bytes(&buffer, b"boundary=", buffer_pos);
+                                        if boundary_start_pos != -1 {
+                                            let boundary_end_pos = search_bytes(&buffer[boundary_start_pos as usize..], b"\r\n\r\n", buffer_pos - boundary_start_pos as usize);
+                                            if boundary_end_pos != -1 {
+                                                let res = String::from_utf8(Vec::from(&buffer[boundary_start_pos as usize + b"boundary=".len()..boundary_start_pos as usize + boundary_end_pos as usize]));
+                                                match res {
+                                                    Ok(value) => {
+                                                        boundary = format!("--{}", value);
+                                                    }
+                                                    Err(_) => {
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
+                                        /*
+                                        * Проверяем авторизацию
+                                        */
+                                        if !is_auth {
+                                            let res = search_bytes(&buffer, b"200 OK", buffer_pos);
+                                            match res {
+                                                -1 => {
+                                                    std::process::exit(1);
+                                                }
+                                                _ => {
+                                                    is_auth = true;
+                                                }
+                                            }
+                                        }
+
                                     }
                                 }
-                                false => {
-                                    first_sep = search_bytes(&buffer, boundary.as_bytes(), buffer_pos);
-                                    if first_sep != -1 {
-                                        if start_old_search_boundary_pos == -1 {
-                                            start_old_search_boundary_pos = first_sep + 2;
-                                        }
-                                        second_sep = search_bytes(&buffer[start_old_search_boundary_pos as usize..], boundary.as_bytes(), buffer_pos);
-                                        start_old_search_boundary_pos = buffer_pos as i32;
+                            }
+
+                            first_sep = search_bytes(&buffer, boundary.as_bytes(), buffer_pos);
+                            if first_sep != -1 {
+                                if start_old_search_boundary_pos == -1 {
+                                    start_old_search_boundary_pos = first_sep + 1;
+                                }
+                                second_sep = search_bytes(&buffer[start_old_search_boundary_pos as usize..], boundary.as_bytes(), buffer_pos - start_old_search_boundary_pos as usize);
+                                start_old_search_boundary_pos = buffer_pos as i32;
+                            }
+
+                            if first_sep != -1 && second_sep != -1 {
+                                let image_start_pos = search_bytes(&buffer, b"\xFF\xD8", buffer_pos);
+                                let mut image_end_pos = -1;
+                                if image_start_pos != -1 {
+                                    image_end_pos = search_bytes(&buffer[image_start_pos as usize..], b"\xFF\xD9", buffer_pos - image_start_pos as usize);
+                                }
+
+                                if image_start_pos != -1 && image_end_pos != -1 {
+                                    let header_image = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_end_pos as usize + b"\xFF\xD9".len());
+                                    let mut msg = vec![0; header_image.len() + image_end_pos as usize + b"\xFF\xD9".len()];
+                                    for (i, ch) in header_image.bytes().enumerate() {
+                                        msg[i] = ch;
+                                    }
+                                    for i in image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() {
+                                        msg[i + header_image.len() - image_start_pos as usize] = buffer[i];
                                     }
 
-                                    if first_sep != -1 && second_sep != -1 {
-                                        let image_start_pos = search_bytes(&buffer, b"\xFF\xD8", buffer_pos);
-                                        let mut image_end_pos = -1;
-                                        if image_start_pos != -1 {
-                                            image_end_pos = search_bytes(&buffer[image_start_pos as usize..], b"\xFF\xD9", buffer_pos);
-                                        }
+                                    let mut mutex = mutex_counter_max_clone.lock().unwrap_or_else(|_| std::process::exit(1));
+                                    let value = *mutex + 1;
+                                    *mutex += 1;
+                                    drop(mutex);
+                                    let mut mutex = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
+                                    mutex.insert(value, msg);
+                                    drop(mutex);
 
-                                        if image_start_pos != -1 && image_end_pos != -1 {
-                                            let header_image = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_end_pos as usize + b"\xFF\xD9".len());
-                                            let mut msg = vec![0; header_image.len() + image_end_pos as usize + b"\xFF\xD9".len()];
-                                            for (i, ch) in header_image.bytes().enumerate() {
-                                                msg[i] = ch;
-                                            }
-                                            for i in image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() {
-                                                msg[i + header_image.len() - image_start_pos as usize] = buffer[i];
-                                            }
-
-
-                                            let mut mutex = mutex_counter_max_clone.lock().unwrap_or_else(|_| std::process::exit(1));
-                                            let value = *mutex + 1;
-                                            *mutex += 1;
-                                            drop(mutex);
-                                            let mut mutex = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
-                                            mutex.insert(value, msg);
-                                            drop(mutex);
-
-                                            let mut buffer_update_pos = 0;
-                                            for i in image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos {
-                                                buffer.swap(i, i - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()));
-                                                buffer_update_pos += 1;
-                                            }
-                                            buffer_pos = buffer_update_pos;
-                                            second_sep = -1;
-                                            start_old_search_boundary_pos = -1;
-                                        }
+                                    let mut buffer_update_pos = 0;
+                                    for i in image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos {
+                                        buffer.swap(i, i - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()));
+                                        buffer_update_pos += 1;
                                     }
+                                    buffer_pos = buffer_update_pos;
+                                    second_sep = -1;
+                                    start_old_search_boundary_pos = -1;
                                 }
                             }
                         }
                     }
-                    Err(_) => {
-                    }
+                    Err(_) => {}
                 }
             }
         });
@@ -499,8 +518,7 @@ impl MjpegServer {
                             }
                         }
                     }
-                }else {
-                }
+                } else {}
 
                 // println!("Writeable connection fd = {}", *fd);
             }
