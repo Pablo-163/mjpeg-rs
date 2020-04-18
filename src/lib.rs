@@ -384,12 +384,6 @@ impl MjpegServer {
                 let res = unsafe {
                     read_socket(*fd, buffer.as_mut_ptr(), 4096)
                 };
-                let mut buffer_utf8 = String::new();
-                for ch in &buffer[0..res as usize] {
-                    if let Some(ch) = std::char::from_u32(*ch as u32) {
-                        buffer_utf8.push(ch);
-                    }
-                }
                 let res = unsafe {
                     access_write_socket(self.epoll_fd, *fd)
                 };
