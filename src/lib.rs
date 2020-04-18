@@ -211,6 +211,9 @@ impl MjpegServer {
                             stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap_or_else(|_| std::process::exit(1));
                             match stream.read(&mut data) {
                                 Ok(n) => {
+                                    if n == 0 {
+                                        std::process::exit(1);
+                                    }
                                     if buffer_pos + n >= MAX_BUFFER_LENGTH {
                                         std::process::exit(1);
                                     }
