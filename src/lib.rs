@@ -268,7 +268,6 @@ impl MjpegServer {
                                                 }
                                             }
                                         }
-
                                     }
                                 }
                             }
@@ -303,9 +302,25 @@ impl MjpegServer {
                                     let value = *mutex + 1;
                                     *mutex += 1;
                                     drop(mutex);
-                                    let mut mutex = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
-                                    mutex.insert(value, msg);
-                                    drop(mutex);
+                                    let mut image_queue = mutex_image_queue_clone.lock().unwrap_or_else(|_| std::process::exit(1));
+                                    image_queue.insert(value, msg);
+                                    if image_queue.len() > 200 {
+                                        let mut keys = vec![];
+                                        for key in image_queue.keys() {
+                                            keys.push(*key);
+                                        }
+                                        keys.sort();
+
+                                        let mut count = image_queue.len() - 100;
+                                        for key in &keys {
+                                            if count == 0 {
+                                                break;
+                                            }
+                                            image_queue.remove(key);
+                                            count -= 1;
+                                        }
+                                    }
+                                    drop(image_queue);
 
                                     let mut buffer_update_pos = 0;
                                     for i in image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos {
@@ -393,10 +408,6 @@ impl MjpegServer {
                     }
                     self.connections.remove(fd);
                 }
-            }
-
-            if last_image_id == 0 {
-                std::thread::sleep(std::time::Duration::from_secs(1));
             }
 
             for fd in writeable_sockets.iter() {
@@ -512,40 +523,16 @@ impl MjpegServer {
                             }
                         }
                     }
-                } else {}
-
-                // println!("Writeable connection fd = {}", *fd);
-            }
-            /*
-            * Чистим очередь
-            */
-            let mut keys = vec![];
-            {
-                let image_queue = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
-                for key in image_queue.keys() {
-                    keys.push(*key);
-                }
-                keys.sort();
-            }
-
-            {
-                let mut image_queue = self.mutex_image_queue.lock().unwrap_or_else(|_| std::process::exit(1));
-                if image_queue.len() > 100 {
-                    let mut count = image_queue.len() - 100;
-                    for key in &keys {
-                        if count == 0 {
-                            break;
-                        }
-                        image_queue.remove(key);
-                        count -= 1;
-                    }
                 }
             }
 
             let mut bad_connections = vec![];
 
-            if !keys.is_empty() && last_image_id < keys[keys.len() - 1].clone() {
-                last_image_id = keys[keys.len() - 1];
+            let mutex = self.mutex_counter_max.lock().unwrap_or_else(|_| std::process::exit(1));
+            let max_image_id = *mutex;
+            drop(mutex);
+            if last_image_id < max_image_id {
+                last_image_id = max_image_id;
                 for (fd, data) in &self.connections {
                     if data.auth == true && data.payload_len == 0 {
                         let res = unsafe {
