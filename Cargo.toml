@@ -1,6 +1,6 @@
 [package]
 name = "mjpeg_rs"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["myduomilia <myduomilia@gmail.com>"]
 edition = "2018"
 build="build.rs"

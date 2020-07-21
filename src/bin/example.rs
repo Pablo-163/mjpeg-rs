@@ -9,8 +9,9 @@ fn main() {
     env_logger::init();
     let address = "0.0.0.0";
     let port = 9009;
-    let server = MjpegServer::new(address, port, "10.0.3.60:80", "/mjpg/video.mjpg?resolution=1920x1080", HttpAuth::BasicAuthType, "root", "root");
-    // let server = MjpegServer::new(address, port, "195.211.217.181:80", "/mjpg/video.mjpg", HttpAuth::NoneAuthType, "root", "root");
+    // let server = MjpegServer::new(address, port, "172.16.10.55:47001", "", HttpAuth::NoneAuthType, "root", "root");
+    // let server = MjpegServer::new(address, port, "172.20.56.1:80", "/mjpg/video.mjpg", HttpAuth::BasicAuthType, "root", "root");
+    let server = MjpegServer::new(address, port, "195.211.217.181:80", "/mjpg/video.mjpg", HttpAuth::NoneAuthType, "root", "root");
     // let server = MjpegServer::new(address, port, "172.27.2.13:80", "/mjpg/video.mjpg", HttpAuth::BasicAuthType, "root", "root");
     // let server = MjpegServer::new(address, port, "213.193.89.202:80", "/mjpg/video.mjpg", HttpAuth::NoneAuthType, "root", "root");
     if let Err(err) = server {
