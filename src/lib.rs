@@ -326,19 +326,20 @@ impl MjpegServer {
                                     }
                                     drop(image_queue);
 
-                                    let mut buffer_update_pos = 0;
-                                    let x = buffer[image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos].as_mut_ptr();
-                                    let y = buffer[image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()].as_mut_ptr();
-                                    unsafe {
-                                        ptr::swap(x, y);
-                                    }
-
+                                    // let mut buffer_update_pos = 0;
                                     // for i in image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos {
                                     //     buffer.swap(i, i - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()));
                                     //     buffer_update_pos += 1;
                                     // }
                                     // buffer_pos = buffer_update_pos;
-                                    buffer_pos = buffer_pos - image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len();
+
+                                    let x = buffer[image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos].as_mut_ptr();
+                                    let y = buffer[image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()].as_mut_ptr();
+                                    unsafe {
+                                        ptr::swap(x, y);
+                                    }
+                                    buffer_pos = buffer_pos - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len());
+
                                     second_sep = -1;
                                     start_old_search_boundary_pos = -1;
                                     image_old_search_end_pos = -1;
