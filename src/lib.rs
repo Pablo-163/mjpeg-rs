@@ -7,12 +7,12 @@ use std::os::raw::c_char;
 use std::ffi::CString;
 use std::collections::HashMap;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::sync::{Arc, Mutex};
 use std::net::{TcpStream, SocketAddr};
 use std::io::{Read, Write};
 use std::str::FromStr;
-use std::cmp::max;
+use std::cmp::{max, min};
 
 extern "C" {
     fn create_socket(address: *const c_char, port: c_int) -> c_int;
@@ -32,10 +32,7 @@ fn search_bytes(buffer: &[u8], pattern: &[u8], limit: usize) -> i32 {
         return -1;
     }
     let len = buffer.len() - pattern.len() + 1;
-    for i in 0..len {
-        if i >= limit {
-            break;
-        }
+    for i in 0..min(len, limit) {
         let mut res = true;
         for j in 0..pattern.len() {
             if buffer[i + j] != pattern[j] {
@@ -130,7 +127,7 @@ impl MjpegServer {
         * Запускаем поток для забора видео потока с камеры
         */
         const MAX_BUFFER_LENGTH: usize = 1024 * 1024 * 12;
-        const SOCKET_BUFFER_LENGTH: usize = 4096;
+        const SOCKET_BUFFER_LENGTH: usize = 4 * 4096;
         let mutex_image_queue_clone = self.mutex_image_queue.clone();
         let mutex_counter_max_clone = self.mutex_counter_max.clone();
         let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
@@ -191,7 +188,7 @@ impl MjpegServer {
                         let mut buffer = vec![0; MAX_BUFFER_LENGTH];
                         let mut buffer_pos = 0;
 
-                        let mut first_sep;
+                        let mut first_sep= -1;
                         let mut second_sep = -1;
 
                         let mut start_old_search_boundary_pos = -1;
@@ -274,8 +271,9 @@ impl MjpegServer {
                                 }
                             }
 
-                            first_sep = search_bytes(&buffer, boundary.as_bytes(), buffer_pos);
-                            if first_sep != -1 {
+                            if first_sep == -1 {
+                                first_sep = search_bytes(&buffer, boundary.as_bytes(), buffer_pos);
+                            } else {
                                 if start_old_search_boundary_pos == -1 {
                                     start_old_search_boundary_pos = first_sep + 1;
                                 }
@@ -285,7 +283,7 @@ impl MjpegServer {
 
                             if first_sep != -1 && second_sep != -1 {
                                 let image_start_pos = search_bytes(&buffer, b"\xFF\xD8", buffer_pos);
-                                let mut image_length = -1;
+                                let mut image_length = 0;
                                 image_old_search_end_pos = image_start_pos;
                                 if image_start_pos != -1 {
                                     image_length = search_bytes(&buffer[image_start_pos as usize..], b"\xFF\xD9", buffer_pos - image_old_search_end_pos as usize);
@@ -326,7 +324,6 @@ impl MjpegServer {
                                     }
                                     drop(image_queue);
 
-
                                     let mut buffer_update_pos = 0;
                                     let start = image_start_pos as usize + image_length as usize + b"\xFF\xD9".len() + boundary.len();
                                     for i in start..buffer_pos {
@@ -334,7 +331,6 @@ impl MjpegServer {
                                         buffer_update_pos += 1;
                                     }
                                     buffer_pos = buffer_update_pos;
-
                                     second_sep = -1;
                                     start_old_search_boundary_pos = -1;
                                     image_old_search_end_pos = -1;
