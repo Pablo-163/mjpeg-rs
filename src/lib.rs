@@ -285,20 +285,20 @@ impl MjpegServer {
 
                             if first_sep != -1 && second_sep != -1 {
                                 let image_start_pos = search_bytes(&buffer, b"\xFF\xD8", buffer_pos);
-                                let mut image_end_pos = -1;
+                                let mut image_length = -1;
                                 image_old_search_end_pos = image_start_pos;
                                 if image_start_pos != -1 {
-                                    image_end_pos = search_bytes(&buffer[image_start_pos as usize..], b"\xFF\xD9", buffer_pos - image_old_search_end_pos as usize);
+                                    image_length = search_bytes(&buffer[image_start_pos as usize..], b"\xFF\xD9", buffer_pos - image_old_search_end_pos as usize);
                                 }
                                 image_old_search_end_pos = max((buffer_pos - 2) as i32, 0);
 
-                                if image_start_pos != -1 && image_end_pos != -1 {
-                                    let header_image = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_end_pos as usize + b"\xFF\xD9".len());
-                                    let mut msg = vec![0; header_image.len() + image_end_pos as usize + b"\xFF\xD9".len()];
+                                if image_start_pos != -1 && image_length != -1 {
+                                    let header_image = format!("--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", image_length as usize + b"\xFF\xD9".len());
+                                    let mut msg = vec![0; header_image.len() + image_length as usize + b"\xFF\xD9".len()];
                                     for (i, ch) in header_image.bytes().enumerate() {
                                         msg[i] = ch;
                                     }
-                                    for i in image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() {
+                                    for i in image_start_pos as usize..image_start_pos as usize + image_length as usize + b"\xFF\xD9".len() {
                                         msg[i + header_image.len() - image_start_pos as usize] = buffer[i];
                                     }
 
@@ -326,19 +326,14 @@ impl MjpegServer {
                                     }
                                     drop(image_queue);
 
-                                    // let mut buffer_update_pos = 0;
-                                    // for i in image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos {
-                                    //     buffer.swap(i, i - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()));
-                                    //     buffer_update_pos += 1;
-                                    // }
-                                    // buffer_pos = buffer_update_pos;
 
-                                    let x = buffer[image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()..buffer_pos].as_mut_ptr();
-                                    let y = buffer[image_start_pos as usize..image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len()].as_mut_ptr();
-                                    unsafe {
-                                        ptr::swap(x, y);
+                                    let mut buffer_update_pos = 0;
+                                    let start = image_start_pos as usize + image_length as usize + b"\xFF\xD9".len() + boundary.len();
+                                    for i in start..buffer_pos {
+                                        buffer.swap(i, i - start);
+                                        buffer_update_pos += 1;
                                     }
-                                    buffer_pos = buffer_pos - (image_start_pos as usize + image_end_pos as usize + b"\xFF\xD9".len() + boundary.len());
+                                    buffer_pos = buffer_update_pos;
 
                                     second_sep = -1;
                                     start_old_search_boundary_pos = -1;
