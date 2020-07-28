@@ -9,10 +9,12 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, SystemTime};
 use std::sync::{Arc, Mutex};
-use std::net::{TcpStream, SocketAddr};
+use std::net::{TcpStream, SocketAddr, IpAddr};
 use std::io::{Read, Write};
 use std::str::FromStr;
 use std::cmp::{max, min};
+use trust_dns_resolver::Resolver;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 
 extern "C" {
     fn create_socket(address: *const c_char, port: c_int) -> c_int;
@@ -131,7 +133,7 @@ impl MjpegServer {
         let mutex_image_queue_clone = self.mutex_image_queue.clone();
         let mutex_counter_max_clone = self.mutex_counter_max.clone();
         let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
-        let video_source_ip = self.video_source_ip.clone();
+        let mut video_source_ip = self.video_source_ip.clone();
         let video_source_uri = self.video_source_uri.clone();
 
         let auth = self.auth.clone();
@@ -140,7 +142,35 @@ impl MjpegServer {
 
         thread::spawn(move || {
             loop {
-                let sock_address = SocketAddr::from_str(&video_source_ip).unwrap_or_else(|_| std::process::exit(1));
+                video_source_ip = video_source_ip.replace("http://", "");
+                let seq: Vec<&str> = video_source_ip.split(":").collect();
+                let sock_address = match seq.len() {
+                    2 => {
+                        let ip = match IpAddr::from_str(&seq[0]) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                let mut resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap_or_else(|_| std::process::exit(1));
+                                let res = resolver.lookup_ip(&seq[0]).unwrap_or_else(|_| std::process::exit(1));
+                                res.iter().next().unwrap_or_else(|| std::process::exit(1))
+                            }
+                        };
+                        SocketAddr::new(ip, seq[1].parse::<u16>().unwrap_or(80))
+                    }
+                    1 => {
+                        let ip = match IpAddr::from_str(&seq[0]) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                let mut resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap_or_else(|_| std::process::exit(1));
+                                let res = resolver.lookup_ip(&seq[0]).unwrap_or_else(|_| std::process::exit(1));
+                                res.iter().next().unwrap_or_else(|| std::process::exit(1))
+                            }
+                        };
+                        SocketAddr::new(ip, 80)
+                    }
+                    _ => {
+                        std::process::exit(1);
+                    }
+                };
                 match TcpStream::connect_timeout(&sock_address, Duration::from_secs(10)) {
                     Ok(mut stream) => {
                         let mut ready = true;

@@ -13,6 +13,7 @@ errno="0.2.5"
 log = "0.4.8"
 env_logger = "*"
 base64 ="0.12.0"
+trust-dns-resolver = "0.19.5"
 
 [build-dependencies]
 cc="1.0.50"
