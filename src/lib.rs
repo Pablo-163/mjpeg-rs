@@ -13,8 +13,6 @@ use std::net::{TcpStream, SocketAddr, IpAddr};
 use std::io::{Read, Write};
 use std::str::FromStr;
 use std::cmp::{max, min};
-use trust_dns_resolver::Resolver;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 
 extern "C" {
     fn create_socket(address: *const c_char, port: c_int) -> c_int;
