@@ -80,8 +80,9 @@ pub struct MjpegServer {
     fd: i32,
     epoll_fd: i32,
     connections: HashMap<i32, Data>,
-    video_source_ip: String,
-    video_source_uri: String,
+    video_source_ip_address: IpAddr,
+    video_source_port: u16,
+    video_source_endpoint: String,
     mutex_image_queue: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     mutex_counter_max: Arc<Mutex<u64>>,
     mutex_counter_active_sessions: Arc<Mutex<u64>>,
@@ -91,7 +92,7 @@ pub struct MjpegServer {
 }
 
 impl MjpegServer {
-    pub fn new(address: &str, port: i32, video_source_ip: &str, video_source_uri: &str, auth: HttpAuth, login: &str, password: &str) -> Result<Self, MjpegServerError> {
+    pub fn new(address: &str, port: i32, video_source_ip_address: IpAddr, video_source_port: Option<u16>, video_source_endpoint: &str, auth: HttpAuth, login: &str, password: &str) -> Result<Self, MjpegServerError> {
         let address_c = CString::new(address).expect("CString::new failed");
         let fd = unsafe {
             create_socket(address_c.as_ptr(), port)
@@ -113,8 +114,9 @@ impl MjpegServer {
         Ok(MjpegServer {
             fd,
             epoll_fd,
-            video_source_ip: String::from(video_source_ip),
-            video_source_uri: String::from(video_source_uri),
+            video_source_ip_address,
+            video_source_port: video_source_port.unwrap_or(80),
+            video_source_endpoint: String::from(video_source_endpoint),
             connections: HashMap::<i32, Data>::new(),
             mutex_image_queue: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
@@ -133,8 +135,9 @@ impl MjpegServer {
         let mutex_image_queue_clone = self.mutex_image_queue.clone();
         let mutex_counter_max_clone = self.mutex_counter_max.clone();
         let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
-        let mut video_source_ip = self.video_source_ip.clone();
-        let video_source_uri = self.video_source_uri.clone();
+        let mut video_source_ip_address = self.video_source_ip_address.clone();
+        let video_source_endpoint = self.video_source_endpoint.clone();
+        let video_source_port = self.video_source_port;
 
         let auth = self.auth.clone();
         let login = self.login.clone();
@@ -142,35 +145,7 @@ impl MjpegServer {
 
         thread::spawn(move || {
             loop {
-                video_source_ip = video_source_ip.replace("http://", "");
-                let seq: Vec<&str> = video_source_ip.split(":").collect();
-                let sock_address = match seq.len() {
-                    2 => {
-                        let ip = match IpAddr::from_str(&seq[0]) {
-                            Ok(value) => value,
-                            Err(_) => {
-                                let mut resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap_or_else(|_| std::process::exit(1));
-                                let res = resolver.lookup_ip(&seq[0]).unwrap_or_else(|_| std::process::exit(1));
-                                res.iter().next().unwrap_or_else(|| std::process::exit(1))
-                            }
-                        };
-                        SocketAddr::new(ip, seq[1].parse::<u16>().unwrap_or(80))
-                    }
-                    1 => {
-                        let ip = match IpAddr::from_str(&seq[0]) {
-                            Ok(value) => value,
-                            Err(_) => {
-                                let mut resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap_or_else(|_| std::process::exit(1));
-                                let res = resolver.lookup_ip(&seq[0]).unwrap_or_else(|_| std::process::exit(1));
-                                res.iter().next().unwrap_or_else(|| std::process::exit(1))
-                            }
-                        };
-                        SocketAddr::new(ip, 80)
-                    }
-                    _ => {
-                        std::process::exit(1);
-                    }
-                };
+                let sock_address = SocketAddr::new(video_source_ip_address, video_source_port);
                 match TcpStream::connect_timeout(&sock_address, Duration::from_secs(10)) {
                     Ok(mut stream) => {
                         let mut ready = true;
@@ -178,7 +153,7 @@ impl MjpegServer {
                         use base64::encode;
                         match auth {
                             HttpAuth::NoneAuthType => {
-                                let mut msg = format!("GET {}\r\n\r\n", &video_source_uri);
+                                let mut msg = format!("GET {}\r\n\r\n", &video_source_endpoint);
                                 let mut buffer;
                                 unsafe {
                                     buffer = msg.as_bytes_mut();
@@ -193,7 +168,7 @@ impl MjpegServer {
                                 is_auth = true;
                             }
                             HttpAuth::BasicAuthType => {
-                                let mut msg = format!("GET {} HTTP/1.0\r\nAuthorization: Basic {}\r\n\r\n", &video_source_uri, encode(format!("{}:{}", login, password)));
+                                let mut msg = format!("GET {} HTTP/1.0\r\nAuthorization: Basic {}\r\n\r\n", &video_source_endpoint, encode(format!("{}:{}", login, password)));
                                 let mut buffer;
                                 unsafe {
                                     buffer = msg.as_bytes_mut();

@@ -3,17 +3,15 @@ extern crate mjpeg_rs;
 extern crate log;
 
 use mjpeg_rs::{MjpegServer, HttpAuth};
+use std::net::IpAddr;
+use std::str::FromStr;
 
 fn main() {
 
     env_logger::init();
     let address = "0.0.0.0";
     let port = 9009;
-    // let server = MjpegServer::new(address, port, "172.16.10.55:47001", "", HttpAuth::NoneAuthType, "root", "root");
-    // let server = MjpegServer::new(address, port, "172.20.56.1:80", "/mjpg/video.mjpg", HttpAuth::BasicAuthType, "root", "root");
-    // let server = MjpegServer::new(address, port, "10.0.3.28:80", "/mjpg/video.mjpg", HttpAuth::BasicAuthType, "root", "root");
-    let server = MjpegServer::new(address, port, "http://24.172.72.22", "/mjpg/video.mjpg", HttpAuth::NoneAuthType, "root", "root");
-    // let server = MjpegServer::new(address, port, "switc.ru", "/mjpg/video.mjpg", HttpAuth::NoneAuthType, "root", "root");
+    let server = MjpegServer::new(address, port, IpAddr::from_str("10.0.3.30").unwrap(), None, "/mjpg/video.mjpg", HttpAuth::BasicAuthType, "root", "root");
     if let Err(err) = server {
         error!("{}", err);
         std::process::exit(1);
