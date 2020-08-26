@@ -261,7 +261,7 @@ impl MjpegServer {
         */
 
         const MAX_BUFFER_LENGTH: usize = 1024 * 1024 * 12;
-        const SOCKET_BUFFER_LENGTH: usize = 1000 * 1500;
+        const SOCKET_BUFFER_LENGTH: usize = 4 * 4096;
         let mutex_image_queue_clone = self.mutex_image_queue.clone();
         let mutex_counter_max_clone = self.mutex_counter_max.clone();
         let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
@@ -615,7 +615,7 @@ impl MjpegServer {
                                         std::thread::sleep(std::time::Duration::from_secs(1));
                                         continue;
                                     }
-                                    let mut data = [0 as u8; SOCKET_BUFFER_LENGTH];
+                                    let mut data = [0 as u8; 1024 * 12];
 
                                     match transports.get_mut(&stream_index) {
 
