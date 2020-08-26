@@ -171,7 +171,6 @@ impl Transcoder {
             match encoded.data() {
                 Some(data) => {
                     for d in 0..data.len() {
-                        println!("{} {}", buffer.len(), data.len());
                         buffer[d] = data[d];
                     }
                     return data.len();
@@ -616,7 +615,7 @@ impl MjpegServer {
                                         std::thread::sleep(std::time::Duration::from_secs(1));
                                         continue;
                                     }
-                                    let mut data = [0 as u8; 1024 * 1024 * 12];
+                                    let mut data = [0 as u8; 1024 * 1024 * 3 / 2];
 
                                     match transports.get_mut(&stream_index) {
 
