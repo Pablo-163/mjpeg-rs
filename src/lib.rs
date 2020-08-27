@@ -26,6 +26,7 @@ use ffmpeg::{
 use ffmpeg::util::format::pixel;
 use ffmpeg::util::log ;
 use std::path::Path;
+use chrono::NaiveDateTime;
 
 
 extern "C" {
@@ -223,6 +224,7 @@ pub struct MjpegServer {
     mutex_image_queue: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     mutex_counter_max: Arc<Mutex<u64>>,
     mutex_counter_active_sessions: Arc<Mutex<u64>>,
+    mutex_timestamp: Arc<Mutex<NaiveDateTime>>,
 }
 
 impl MjpegServer {
@@ -253,6 +255,7 @@ impl MjpegServer {
             mutex_image_queue: Arc::new(Mutex::new(HashMap::new())),
             mutex_counter_max: Arc::new(Mutex::new(0)),
             mutex_counter_active_sessions: Arc::new(Mutex::new(0)),
+            mutex_timestamp: Arc::new(Mutex::new(NaiveDateTime::from_timestamp(chrono::Local::now().timestamp(), 0))),
         })
     }
     pub fn run(&mut self) {
@@ -265,6 +268,7 @@ impl MjpegServer {
         let mutex_image_queue_clone = self.mutex_image_queue.clone();
         let mutex_counter_max_clone = self.mutex_counter_max.clone();
         let mutex_counter_active_sessions_clone = self.mutex_counter_active_sessions.clone();
+        let mutex_timestamp = self.mutex_timestamp.clone();
 
 
         /*
@@ -400,6 +404,10 @@ impl MjpegServer {
                                     let mutex = mutex_counter_active_sessions_clone.lock().unwrap_or_else(|_| std::process::exit(1));
                                     let counter_active_session = *mutex;
                                     drop(mutex);
+
+                                    let mut timestamp = mutex_timestamp.lock().unwrap_or_else(|_|std::process::exit(1));
+                                    *timestamp = NaiveDateTime::from_timestamp(chrono::Local::now().timestamp(), 0);
+                                    drop(timestamp);
 
                                     if counter_active_session == 0 {
                                         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -603,6 +611,10 @@ impl MjpegServer {
 
                                 for (stream,mut packet) in ictx.packets() {
 
+                                    let mut timestamp = mutex_timestamp.lock().unwrap_or_else(|_|std::process::exit(1));
+                                    *timestamp = NaiveDateTime::from_timestamp(chrono::Local::now().timestamp(), 0);
+                                    drop(timestamp);
+
                                     if stream.index()!= stream_index {
                                         continue
                                     }
@@ -718,6 +730,15 @@ impl MjpegServer {
 
         let mut last_image_id = 0;
         loop {
+            let timestamp = self.mutex_timestamp.lock().unwrap_or_else(|_|std::process::exit(1));
+            let sec =
+                NaiveDateTime::from_timestamp(chrono::Local::now().timestamp(), 0)
+                    .signed_duration_since(*timestamp)
+                    .num_seconds();
+            drop(timestamp);
+            if sec > 30 {
+                panic!("Timeout of video stream from camera exceeded");
+            }
             const MAX_EVENTS: usize = 100;
             let mut connected_sockets: [c_int; MAX_EVENTS] = [0; MAX_EVENTS];
             let mut closed_sockets: [c_int; MAX_EVENTS] = [0; MAX_EVENTS];
