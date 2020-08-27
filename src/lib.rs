@@ -297,7 +297,8 @@ impl MjpegServer {
                         }
                         let pair: Vec<&str> = first.split(':').collect();
                         if pair.len() < 2 {
-                            panic!("Invalid string of auth data")
+                            // panic!("Invalid string of auth data")
+                            std::process::exit(1);
                         }
                         login = String::from(pair[0]);
                         password = String::from(pair[1]);
@@ -341,7 +342,8 @@ impl MjpegServer {
                         (ip, 80)
                     }
                     _ => {
-                        panic!("Error resolving ip address");
+                        // panic!("Error resolving ip address");
+                        std::process::exit(1);
                     }
                 };
                 let video_source_endpoint_clone = String::from(video_source_endpoint);
@@ -737,7 +739,8 @@ impl MjpegServer {
                     .num_seconds();
             drop(timestamp);
             if sec > 30 {
-                panic!("Timeout of video stream from camera exceeded");
+                // panic!("Timeout of video stream from camera exceeded");
+                std::process::exit(1);
             }
             const MAX_EVENTS: usize = 100;
             let mut connected_sockets: [c_int; MAX_EVENTS] = [0; MAX_EVENTS];
