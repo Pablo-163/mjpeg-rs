@@ -113,7 +113,7 @@ impl Transcoder {
         }
         match encoder.open_with(opts) {
             Ok(_) => {}
-            _ => { println!("ERROR while opening mjpeg encoder with supplied settings"); }
+            _ => { eprintln!("ERROR while opening mjpeg encoder with supplied settings"); }
         }
         encoder = ost.codec().encoder().video()?;
 
@@ -133,7 +133,7 @@ impl Transcoder {
     fn send_packet_to_decoder(&mut self, packet: &Packet) {
         match self.decoder.send_packet(packet) {
             Ok(_) => (),
-            Err(_) => println!("An error occurred while decoding"),
+            Err(_) => eprintln!("An error occurred while decoding"),
         }
     }
     fn receive_and_process_decoded_frames(
@@ -342,7 +342,7 @@ impl MjpegServer {
                         (ip, 80)
                     }
                     _ => {
-                        // panic!("Error resolving ip address");
+                        eprintln!("Error resolving ip address");
                         std::process::exit(1);
                     }
                 };
@@ -720,7 +720,7 @@ impl MjpegServer {
                                 }
                             }
                             Err(_) => {
-                                println!("Connection lose");
+                                eprintln!("Connection lose");
                                 std::process::exit(1);
 
                             }
